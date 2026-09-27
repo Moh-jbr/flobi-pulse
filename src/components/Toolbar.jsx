@@ -138,9 +138,9 @@ export default function Toolbar() {
       <div
         className="absolute inset-0 -z-10"
         style={{
-          background: 'linear-gradient(to bottom, var(--bg-content) 0%, color-mix(in srgb, var(--bg-content) 82%, transparent) 70%, transparent 100%)',
-          backdropFilter: 'blur(12px)',
-          maskImage: 'linear-gradient(to bottom, black 60%, transparent)',
+          // A plain fade, no blur or mask: both flicker on macOS as rows repaint underneath.
+          // Solid behind the title and subtitle, so nothing scrolling under shows through them.
+          background: 'linear-gradient(to bottom, var(--bg-content) 70%, color-mix(in srgb, var(--bg-content) 60%, transparent) 82%, color-mix(in srgb, var(--bg-content) 22%, transparent) 92%, transparent 100%)',
         }}
       />
       <div className="min-w-0 flex-1">
