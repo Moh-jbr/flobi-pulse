@@ -1,0 +1,106 @@
+{
+  "$comment": "Shared, non-secret settings baked into every Flobi Pulse build. See SETUP.md. Each person can still override Sentry, Cloudflare and uptime URLs in Settings.",
+  "projectId": "flobi-prod-2026",
+  "namespace": "flobi",
+  "cluster": {
+    "name": "flobi-cluster",
+    "location": "europe-west1",
+    "endpoint": "",
+    "caCertificate": "",
+    "$comment": "Optional: the app looks up the endpoint and certificate itself with the service-account key."
+  },
+  "sentry": {
+    "host": "sentry.io",
+    "org": "",
+    "token": ""
+  },
+  "cloudflare": {
+    "accountId": "",
+    "zones": [
+      "flobi.ai"
+    ],
+    "token": ""
+  },
+  "uptime": [
+    {
+      "name": "API gateway",
+      "url": "https://api.flobi.ai/health",
+      "group": "backend"
+    },
+    {
+      "name": "Agents",
+      "url": "https://agents.flobi.ai/socket.io/?EIO=4&transport=polling",
+      "group": "backend"
+    },
+    {
+      "name": "Nodes (ws)",
+      "url": "https://ws.flobi.ai/api/v1/",
+      "group": "backend"
+    },
+    {
+      "name": "Yjs relay",
+      "url": "https://yjs.flobi.ai/health",
+      "group": "backend"
+    },
+    {
+      "name": "flobi.ai",
+      "url": "https://flobi.ai/",
+      "group": "frontend"
+    },
+    {
+      "name": "App",
+      "url": "https://app.flobi.ai/",
+      "group": "frontend"
+    },
+    {
+      "name": "Auth",
+      "url": "https://auth.flobi.ai/",
+      "group": "frontend"
+    },
+    {
+      "name": "Flow",
+      "url": "https://flow.flobi.ai/",
+      "group": "frontend"
+    },
+    {
+      "name": "Drive",
+      "url": "https://drive.flobi.ai/",
+      "group": "frontend"
+    },
+    {
+      "name": "Brands",
+      "url": "https://brands.flobi.ai/",
+      "group": "frontend"
+    },
+    {
+      "name": "Notes",
+      "url": "https://notes.flobi.ai/",
+      "group": "frontend"
+    },
+    {
+      "name": "Moodboard",
+      "url": "https://mood.flobi.ai/",
+      "group": "frontend"
+    },
+    {
+      "name": "Lumens",
+      "url": "https://lumens.flobi.ai/",
+      "group": "frontend"
+    },
+    {
+      "name": "Market",
+      "url": "https://market.flobi.ai/",
+      "group": "frontend"
+    },
+    {
+      "name": "Upscaler",
+      "url": "https://upscale.flobi.ai/",
+      "group": "frontend"
+    },
+    {
+      "name": "Handoff",
+      "url": "https://handoff.flobi.ai/",
+      "group": "frontend"
+    }
+  ]
+}

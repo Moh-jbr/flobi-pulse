@@ -1,0 +1,26 @@
+Flobi Pulse {version} for Windows
+=================================
+
+INSTALL
+
+1. Double-click "Flobi-Pulse-Setup-{version}.exe".
+
+2. If Windows says "Windows protected your PC", click "More info", then "Run anyway".
+   That warning shows because the app isn't signed with a paid certificate. It's the
+   same app your team builds from github.com/Moh-jbr/flobi-pulse.
+
+3. Choose where to install it and click Install.
+   A "Flobi Pulse" shortcut appears on your Desktop and in the Start menu.
+
+4. Open Flobi Pulse and choose the service-account key file (.json) your admin gave you.
+   Flobi Pulse only reads: it can't change anything in the cluster.
+
+UPDATES
+
+When a new version comes out, an "Update available" button appears at the top of the
+app. Click it: Flobi Pulse downloads the update, installs it in the same folder and
+restarts. Your settings and keys stay. You won't need this zip again.
+
+UNINSTALL
+
+Settings > Apps > Installed apps > Flobi Pulse > Uninstall.

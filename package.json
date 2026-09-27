@@ -1,0 +1,114 @@
+{
+  "name": "flobi-pulse",
+  "productName": "Flobi Pulse",
+  "version": "1.0.0",
+  "description": "Read-only live health monitor for the Flobi platform (GKE, Cloud SQL, Sentry, Cloudflare).",
+  "author": "Flobi",
+  "license": "UNLICENSED",
+  "repository": "github:Moh-jbr/flobi-pulse",
+  "private": true,
+  "type": "module",
+  "main": "electron/main.mjs",
+  "engines": {
+    "node": ">=20.10"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "demo": "node scripts/dev.mjs --demo",
+    "build": "vite build",
+    "start": "vite build && electron .",
+    "test": "node --test \"test/**/*.test.mjs\"",
+    "dist:win": "vite build && electron-builder --win --publish never",
+    "dist:mac": "vite build && electron-builder --mac --publish never",
+    "dist:linux": "vite build && electron-builder --linux --publish never"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.2.2",
+    "@vitejs/plugin-react": "^5.2.0",
+    "electron": "^39.0.0",
+    "electron-builder": "^26.0.0",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "tailwindcss": "^4.2.2",
+    "vite": "^7.3.1"
+  },
+  "build": {
+    "appId": "ai.flobi.pulse",
+    "productName": "Flobi Pulse",
+    "copyright": "Flobi",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "electron/**/*",
+      "dist/**/*",
+      "config/team.config.json",
+      "package.json"
+    ],
+    "asar": true,
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "universal"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "universal"
+          ]
+        }
+      ],
+      "darkModeSupport": true,
+      "identity": "-",
+      "hardenedRuntime": false,
+      "artifactName": "Flobi-Pulse-${version}-mac.${ext}"
+    },
+    "dmg": {
+      "title": "Flobi Pulse",
+      "artifactName": "Flobi-Pulse-${version}.${ext}"
+    },
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Flobi Pulse",
+      "artifactName": "Flobi-Pulse-Setup-${version}.${ext}",
+      "uninstallDisplayName": "Flobi Pulse"
+    },
+    "publish": null,
+    "linux": {
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "category": "Development",
+      "executableName": "flobi-pulse",
+      "synopsis": "Read-only live health monitor for the Flobi platform",
+      "artifactName": "Flobi-Pulse-${version}.${ext}"
+    }
+  }
+}

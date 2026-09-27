@@ -1,0 +1,210 @@
+import { useStore, navigate, setState } from '../lib/store.js';
+import Icon from './icons.jsx';
+import { cx, StatusDot, useWindowWidth } from './ui.jsx';
+import { compact } from '../lib/format.js';
+
+const GROUPS = [
+  {
+    title: 'Monitor',
+    items: [
+      { id: 'overview', label: 'Overview', icon: 'overview' },
+      { id: 'traffic', label: 'Live Traffic', icon: 'traffic' },
+      { id: 'errors', label: 'Errors', icon: 'errors' },
+      { id: 'crashes', label: 'Crashes & Down', icon: 'crashes' },
+      { id: 'logs', label: 'Logs', icon: 'logs' },
+      { id: 'events', label: 'Events', icon: 'events' },
+    ],
+  },
+  {
+    title: 'Platform',
+    items: [
+      { id: 'infrastructure', label: 'Infrastructure', icon: 'infrastructure' },
+      { id: 'database', label: 'Database', icon: 'database' },
+      { id: 'frontends', label: 'Frontends', icon: 'frontends' },
+    ],
+  },
+  {
+    title: 'History',
+    items: [{ id: 'timeline', label: 'Timeline', icon: 'timeline' }],
+  },
+];
+
+const OVERALL = {
+  operational: { tone: 'green', label: 'Operational' },
+  degraded: { tone: 'orange', label: 'Degraded' },
+  outage: { tone: 'red', label: 'Outage' },
+  connecting: { tone: 'accent', label: 'Connecting' },
+  unknown: { tone: 'gray', label: 'Unknown' },
+};
+
+function SourceDots({ sources, session }) {
+  const list = [
+    ['kubernetes', 'Cluster'],
+    ['live', 'Live logs'],
+    ['cloudsql', 'Database'],
+    ['sentry', 'Sentry'],
+    ['cloudflare', 'Cloudflare'],
+  ];
+  const tone = (st) => (!st ? 'gray' : st === 'ok' || st === 'streaming' ? 'green' : st === 'connecting' ? 'accent' : st === 'off' ? 'gray' : st === 'degraded' || st === 'unavailable' ? 'orange' : 'red');
+  return (
+    <div className="flex items-center gap-2.5 px-2.5" title={list.map(([k, l]) => `${l}: ${sources?.[k]?.status || 'waiting'}${sources?.[k]?.message ? ` — ${sources[k].message}` : ''}`).join('\n')}>
+      {list.map(([k, l]) => (
+        <span key={k} className="inline-flex items-center gap-1 text-footnote text-label-3">
+          <StatusDot tone={tone(sources?.[k]?.status)} size={6} />
+          {l}
+        </span>
+      )).slice(0, 3)}
+      <button type="button" onClick={() => navigate('settings')} className="ml-auto text-footnote text-label-3 hover:text-label no-drag">
+        +{list.length - 3}
+      </button>
+    </div>
+  );
+}
+
+export default function Sidebar() {
+  const view = useStore((s) => s.nav.view);
+  const health = useStore((s) => s.sections.health);
+  const alerts = useStore((s) => s.sections.alerts);
+  const errors = useStore((s) => s.sections.errors);
+  const events = useStore((s) => s.sections.events);
+  const traffic = useStore((s) => s.sections.traffic);
+  const sources = useStore((s) => s.sections.sources);
+  const session = useStore((s) => s.sections.session);
+  const info = useStore((s) => s.info);
+  const isMac = info?.platform === 'darwin';
+
+  const crit = alerts?.counts?.critical || 0;
+  const activeErrors = (errors?.backend || []).filter((g) => g.active).length + (errors?.frontend || []).filter((g) => g.active).length;
+  const warnEvents = (events || []).filter((e) => e.type === 'Warning' && Date.now() - e.at < 60 * 60_000).length;
+  const badges = {
+    traffic: traffic?.rpm ? { text: `${compact(traffic.rpm)}/m`, tone: 'plain' } : null,
+    errors: activeErrors ? { text: activeErrors, tone: 'plain' } : null,
+    crashes: crit ? { text: crit, tone: 'red' } : alerts?.counts?.warning ? { text: alerts.counts.warning, tone: 'orange' } : null,
+    events: warnEvents ? { text: warnEvents, tone: 'plain' } : null,
+  };
+  const o = OVERALL[health?.overall] || OVERALL.connecting;
+  const identity = info?.identity;
+  const initials = (identity?.name || identity?.email || '?')
+    .split(/[\s@._-]+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((x) => x[0].toUpperCase())
+    .join('');
+
+  // Narrow windows get an icon rail so the content keeps its room.
+  const width = useWindowWidth();
+  if (width < 1200) {
+    return (
+      <aside className="w-[76px] shrink-0 p-2 pr-0 drag">
+        <div className="glass-panel h-full rounded-[20px] flex flex-col items-center overflow-hidden">
+          <div className={cx('shrink-0', isMac ? 'pt-[46px] pb-2' : 'pt-4 pb-2')}>
+            <img src="./icon.png" alt="" className="w-[26px] h-[26px] rounded-[7px]" onError={(e) => (e.currentTarget.style.display = 'none')} title={`Flobi Pulse · ${session?.mode === 'demo' ? 'Demo' : 'Prod'}`} />
+          </div>
+          <button type="button" onClick={() => navigate('overview')} title={`${health?.headline || 'Connecting…'}${health?.counts ? `\n${health.counts.services} services · ${health.counts.podsReady}/${health.counts.pods} pods ready` : ''}`} className="no-drag press w-11 h-11 [@media(max-height:720px)]:h-9 mb-1 rounded-[14px] grid place-items-center bg-fill-4 hover:bg-fill-3">
+            <StatusDot tone={o.tone} pulse={health?.overall === 'operational' || health?.overall === 'outage'} size={11} />
+          </button>
+          <nav className="no-drag flex-1 min-h-0 w-full overflow-y-auto px-2 pb-2 flex flex-col items-center">
+            {GROUPS.map((g, gi) => (
+              <div key={g.title} className={cx('w-full flex flex-col items-center gap-0.5', gi > 0 && 'mt-2 pt-2 [@media(max-height:720px)]:mt-1 [@media(max-height:720px)]:pt-1 hairline-t')}>
+                {g.items.map((it) => {
+                  const active = view === it.id;
+                  const b = badges[it.id];
+                  return (
+                    <button key={it.id} type="button" onClick={() => navigate(it.id)} title={b ? `${it.label} · ${b.text}` : it.label} aria-label={it.label} className={cx('relative w-11 h-10 [@media(max-height:720px)]:h-8 rounded-[12px] grid place-items-center transition-colors duration-150', active ? 'bg-fill-2' : 'hover:bg-fill-4')}>
+                      <Icon name={it.icon} size={18} className="text-accent" strokeWidth={1.7} />
+                      {b && (b.tone === 'red' || b.tone === 'orange') && <span className={cx('absolute top-1 right-1 min-w-[16px] h-4 px-1 rounded-full text-[10px] leading-4 font-semibold text-white text-center tabular', b.tone === 'red' ? 'bg-red' : 'bg-orange')}>{b.text}</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
+          </nav>
+          <div className="no-drag shrink-0 pb-2 pt-2 w-full flex flex-col items-center gap-1.5 hairline-t">
+            <button type="button" title="Settings (Ctrl+,)" aria-label="Settings" onClick={() => navigate('settings')} className={cx('w-11 h-10 [@media(max-height:720px)]:h-8 rounded-[12px] grid place-items-center text-label-2 hover:text-label hover:bg-fill-4', view === 'settings' && 'text-accent bg-fill-2')}>
+              <Icon name="settings" size={18} />
+            </button>
+            <div title={`${identity?.name || 'Signed in'}${identity?.email ? ` · ${identity.email}` : ''}`} className="w-8 h-8 rounded-[10px] bg-accent-tint text-accent grid place-items-center text-subheadline font-semibold">
+              {initials}
+            </div>
+          </div>
+        </div>
+      </aside>
+    );
+  }
+
+  return (
+    <aside className="w-[244px] shrink-0 p-2 pr-0 drag">
+      <div className="glass-panel h-full rounded-[20px] flex flex-col overflow-hidden">
+        <div className={cx('shrink-0 flex items-center gap-2 px-[18px]', isMac ? 'pt-[46px] pb-2' : 'pt-4 pb-2')}>
+          <img src="./icon.png" alt="" className="w-[22px] h-[22px] rounded-[6px]" onError={(e) => (e.currentTarget.style.display = 'none')} />
+          <span className="text-headline font-semibold tracking-[-0.01em]">Flobi Pulse</span>
+          <span className="ml-auto text-footnote font-semibold px-1.5 h-[18px] inline-flex items-center rounded-[5px] bg-fill-3 text-label-2 uppercase tracking-wide">
+            {session?.mode === 'demo' ? 'Demo' : 'Prod'}
+          </span>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => navigate('overview')}
+          className="no-drag press mx-2 mt-1 mb-2 px-2.5 py-3 rounded-[12px] text-left bg-fill-4 hover:bg-fill-3 transition-colors"
+        >
+          <div className="flex items-start gap-2.5">
+            <StatusDot className="mt-[4px] mx-[3.5px]" tone={o.tone} pulse={health?.overall === 'operational' || health?.overall === 'outage'} size={9} />
+            <span className="text-headline font-semibold line-clamp-2">{health?.headline || 'Connecting…'}</span>
+          </div>
+          {health?.counts && (
+            <div className="text-subheadline text-label-2 mt-1 pl-[26px] tabular">
+              {health.counts.services} services · {health.counts.podsReady}/{health.counts.pods} pods ready
+            </div>
+          )}
+        </button>
+
+        <nav className="no-drag flex-1 min-h-0 overflow-y-auto px-2 pb-2">
+          {GROUPS.map((g) => (
+            <div key={g.title} className="mt-2 first:mt-0">
+              <div className="px-2.5 pt-2 pb-1 text-subheadline font-semibold text-label-3">{g.title}</div>
+              {g.items.map((it) => {
+                const active = view === it.id;
+                const b = badges[it.id];
+                return (
+                  <button
+                    key={it.id}
+                    type="button"
+                    onClick={() => navigate(it.id)}
+                    className={cx('w-full h-8 px-2.5 rounded-[10px] flex items-center gap-2.5 text-body transition-colors duration-150', active ? 'bg-fill-2 font-medium' : 'hover:bg-fill-4')}
+                  >
+                    <Icon name={it.icon} size={16} className={cx(active ? 'text-accent' : 'text-accent/90')} strokeWidth={1.7} />
+                    <span className="flex-1 text-left truncate">{it.label}</span>
+                    {b && (
+                      <span className={cx('tabular text-subheadline', b.tone === 'red' ? 'min-w-[18px] h-[18px] px-1.5 rounded-full bg-red text-white font-semibold grid place-items-center' : b.tone === 'orange' ? 'min-w-[18px] h-[18px] px-1.5 rounded-full bg-orange text-white font-semibold grid place-items-center' : 'text-label-3')}>
+                        {b.text}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
+        </nav>
+
+        <div className="no-drag shrink-0 px-2 pb-2 pt-2 hairline-t">
+          <SourceDots sources={sources} session={session} />
+          <div className="mt-2 flex items-center gap-2.5 py-1.5 pl-2.5 pr-1 rounded-[12px] hover:bg-fill-4 transition-colors">
+            <div className="w-7 h-7 rounded-[9px] bg-accent-tint text-accent grid place-items-center text-subheadline font-semibold shrink-0">{initials}</div>
+            <div className="min-w-0 flex-1">
+              <div className="text-callout font-medium truncate">{identity?.name || 'Signed in'}</div>
+              <div className="text-footnote text-label-3 truncate">{identity?.kind === 'service-account' ? 'Service account' : identity?.kind === 'demo' ? 'Simulated data' : identity?.email}</div>
+            </div>
+            <button type="button" title="Settings (⌘,)" onClick={() => navigate('settings')} className={cx('w-7 h-7 rounded-full grid place-items-center text-label-2 hover:text-label hover:bg-fill-3', view === 'settings' && 'text-accent bg-accent-tint')}>
+              <Icon name="settings" size={16} />
+            </button>
+          </div>
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+export function openPalette() {
+  setState({ palette: true });
+}

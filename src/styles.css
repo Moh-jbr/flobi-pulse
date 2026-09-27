@@ -1,0 +1,506 @@
+@import 'tailwindcss';
+
+/*
+  Flobi Pulse design system — OS 27 (Liquid Glass, refined).
+  • Type: the macOS HIG text styles (13 pt body), SF Pro on Mac, Segoe UI Variable on Windows.
+  • Space: 4 pt base, 8 pt grid.
+  • Shape: concentric radii (inner radius = outer radius − padding).
+  • Material: glass only on the navigation layer (sidebar, toolbars, sheets, popovers).
+    Content (tables, logs, charts) sits on solid surfaces for legibility.
+  • Transparency: user-adjustable "Clear ↔ Tinted" like OS 27 (--glass-alpha).
+  • Motion: springs; everything collapses to fades with Reduce Motion.
+*/
+
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+@theme {
+  --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+  --font-display: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI Variable Display', 'Segoe UI', system-ui, sans-serif;
+  /* Consolas before Cascadia: Chromium draws Cascadia near-bold at log sizes on Windows. */
+  --font-mono: 'SF Mono', ui-monospace, Menlo, Consolas, 'Cascadia Mono', monospace;
+
+  /* HIG macOS text styles */
+  --text-large-title: 26px;
+  --text-large-title--line-height: 32px;
+  --text-title1: 22px;
+  --text-title1--line-height: 26px;
+  --text-title2: 17px;
+  --text-title2--line-height: 22px;
+  --text-title3: 15px;
+  --text-title3--line-height: 20px;
+  --text-headline: 13px;
+  --text-headline--line-height: 16px;
+  --text-body: 13px;
+  --text-body--line-height: 16px;
+  --text-callout: 12px;
+  --text-callout--line-height: 15px;
+  --text-subheadline: 11px;
+  --text-subheadline--line-height: 14px;
+  --text-footnote: 10px;
+  --text-footnote--line-height: 13px;
+  --text-hero: 44px;
+  --text-hero--line-height: 48px;
+
+  --radius-xs: 5px;
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
+  --radius-2xl: 22px;
+  --radius-3xl: 28px;
+
+  --ease-spring: linear(0.0001, 0.036, 0.1241, 0.238, 0.3677, 0.4974, 0.6154, 0.7233, 0.8124, 0.8873, 0.9455, 0.9876, 1.018, 1.0375, 1.048, 1.0523, 1.0518, 1.0481, 1.0424, 1.0359, 1.029, 1.0225, 1.0167, 1.0115, 1.0074, 1.004, 1.0014, 0.9996, 0.9984, 0.9976, 0.9973, 0.9972, 0.9974, 0.9976, 0.998, 0.9983, 0.9987, 0.999, 0.9993, 0.9995, 1);
+  --ease-smooth: linear(0.0001, 0.0242, 0.0819, 0.1583, 0.243, 0.3292, 0.4126, 0.4906, 0.5619, 0.6257, 0.6822, 0.7315, 0.7742, 0.8108, 0.8421, 0.8686, 0.891, 0.9099, 0.9256, 0.9387, 0.9497, 0.9587, 0.9662, 0.9724, 0.9775, 0.9817, 0.9851, 0.9879, 0.9902, 0.992, 0.9936, 0.9948, 0.9958, 0.9966, 0.9973, 0.9978, 0.9982, 0.9986, 0.9989, 0.9991, 1);
+  --ease-snappy: linear(0.0001, 0.0195, 0.0644, 0.1254, 0.1958, 0.2704, 0.3455, 0.4224, 0.4915, 0.5558, 0.6146, 0.6678, 0.7154, 0.7575, 0.7963, 0.8284, 0.8561, 0.88, 0.9004, 0.9178, 0.9325, 0.9454, 0.9557, 0.9642, 0.9713, 0.9771, 0.9819, 0.986, 0.9891, 0.9916, 0.9936, 0.9952, 0.9965, 0.9975, 0.9983, 0.9989, 0.9993, 0.9997, 0.9999, 1.0001, 1);
+}
+
+@theme inline {
+  --color-window: var(--bg-window);
+  --color-content: var(--bg-content);
+  --color-elevated: var(--bg-elevated);
+  --color-grouped: var(--bg-grouped);
+  --color-label: var(--label);
+  --color-label-2: var(--label-2);
+  --color-label-3: var(--label-3);
+  --color-label-4: var(--label-4);
+  --color-separator: var(--separator);
+  --color-fill-1: var(--fill-1);
+  --color-fill-2: var(--fill-2);
+  --color-fill-3: var(--fill-3);
+  --color-fill-4: var(--fill-4);
+  --color-accent: var(--accent);
+  --color-accent-tint: var(--accent-tint);
+  --color-green: var(--green);
+  --color-orange: var(--orange);
+  --color-red: var(--red);
+  --color-yellow: var(--yellow);
+  --color-purple: var(--purple);
+  --color-teal: var(--teal);
+  --color-indigo: var(--indigo);
+  --color-gray: var(--gray);
+  --color-green-tint: var(--green-tint);
+  --color-orange-tint: var(--orange-tint);
+  --color-red-tint: var(--red-tint);
+  --color-gray-tint: var(--gray-tint);
+  --color-thumb: var(--thumb);
+}
+
+:root {
+  color-scheme: light;
+  --bg-content: #ffffff;
+  /* The content surface runs under the floating sidebar and inspector, so their gutters match it. */
+  --bg-window: var(--bg-content);
+  --bg-elevated: #ffffff;
+  --bg-grouped: #f5f5f7;
+  --label: rgb(0 0 0 / 0.88);
+  --label-2: rgb(60 60 67 / 0.64);
+  --label-3: rgb(60 60 67 / 0.36);
+  --label-4: rgb(60 60 67 / 0.2);
+  --separator: rgb(60 60 67 / 0.13);
+  --tooltip-bg: rgb(30 30 32 / 0.94);
+  --tooltip-fg: #ffffff;
+  --fill-1: rgb(120 120 128 / 0.2);
+  --fill-2: rgb(120 120 128 / 0.14);
+  --fill-3: rgb(118 118 128 / 0.1);
+  --fill-4: rgb(116 116 128 / 0.06);
+  --accent: #0088ff;
+  --accent-tint: rgb(0 136 255 / 0.12);
+  --green: #34c759;
+  --orange: #ff8d28;
+  --red: #ff383c;
+  --yellow: #ffcc00;
+  --purple: #cb30e0;
+  --teal: #00c3d0;
+  --indigo: #6155f5;
+  --gray: #8e8e93;
+  --green-tint: rgb(52 199 89 / 0.14);
+  --orange-tint: rgb(255 141 40 / 0.15);
+  --red-tint: rgb(255 56 60 / 0.12);
+  --gray-tint: rgb(142 142 147 / 0.14);
+  --thumb: #ffffff;
+
+  --glass-alpha: 0.72;
+  --glass-rgb: 243 243 246;
+  --glass-border: rgb(255 255 255 / 0.65);
+  --glass-edge: rgb(0 0 0 / 0.07);
+  --glass-highlight: rgb(255 255 255 / 0.85);
+  --shadow-glass: 0 10px 34px rgb(0 0 0 / 0.08), 0 2px 6px rgb(0 0 0 / 0.04);
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.04), 0 0 0 0.5px rgb(0 0 0 / 0.06);
+  --shadow-pop: 0 24px 60px rgb(0 0 0 / 0.18), 0 4px 14px rgb(0 0 0 / 0.08);
+  --scrim: rgb(0 0 0 / 0.14);
+  --code-bg: #f6f6f8;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --bg-content: #161618;
+  --bg-elevated: #1e1e21;
+  --bg-grouped: #111113;
+  --label: rgb(255 255 255 / 0.92);
+  --label-2: rgb(235 235 245 / 0.62);
+  --label-3: rgb(235 235 245 / 0.34);
+  --label-4: rgb(235 235 245 / 0.18);
+  --separator: rgb(255 255 255 / 0.09);
+  --tooltip-bg: rgb(245 245 247 / 0.96);
+  --tooltip-fg: #1d1d1f;
+  --fill-1: rgb(120 120 128 / 0.36);
+  --fill-2: rgb(120 120 128 / 0.28);
+  --fill-3: rgb(118 118 128 / 0.22);
+  --fill-4: rgb(116 116 128 / 0.14);
+  --accent: #0091ff;
+  --accent-tint: rgb(0 145 255 / 0.2);
+  --green: #30d158;
+  --orange: #ff9230;
+  --red: #ff4245;
+  --yellow: #ffd600;
+  --purple: #db34f2;
+  --teal: #00d2e0;
+  --indigo: #6d7cff;
+  --gray: #98989d;
+  --green-tint: rgb(48 209 88 / 0.18);
+  --orange-tint: rgb(255 146 48 / 0.2);
+  --red-tint: rgb(255 66 69 / 0.2);
+  --gray-tint: rgb(152 152 157 / 0.2);
+  --thumb: #5a5a5f;
+
+  --glass-rgb: 34 34 38;
+  --glass-border: rgb(255 255 255 / 0.1);
+  --glass-edge: rgb(0 0 0 / 0.5);
+  --glass-highlight: rgb(255 255 255 / 0.1);
+  --shadow-glass: 0 12px 40px rgb(0 0 0 / 0.45), 0 2px 8px rgb(0 0 0 / 0.3);
+  --shadow-card: 0 0 0 0.5px rgb(255 255 255 / 0.07);
+  --shadow-pop: 0 30px 80px rgb(0 0 0 / 0.6), 0 4px 16px rgb(0 0 0 / 0.4);
+  --scrim: rgb(0 0 0 / 0.4);
+  --code-bg: #111113;
+}
+
+/* Native window material (macOS vibrancy / Windows 11 Mica) shows through. */
+:root[data-material='native'] {
+  --bg-window: transparent;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    margin: 0;
+    font-family: var(--font-sans);
+    font-size: 13px;
+    line-height: 16px;
+    color: var(--label);
+    background: var(--bg-window);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    overflow: hidden;
+    user-select: none;
+    cursor: default;
+    font-feature-settings: 'cv11', 'ss01';
+  }
+  input,
+  textarea,
+  select,
+  button {
+    font: inherit;
+    color: inherit;
+  }
+  ::selection {
+    background: var(--accent-tint);
+  }
+  input,
+  textarea {
+    caret-color: var(--accent);
+  }
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+  }
+  p {
+    text-wrap: pretty;
+  }
+  /* Hovers fade instead of snapping. Utilities (press, transition-*) still win. */
+  button,
+  a {
+    transition-property: color, background-color, box-shadow, opacity;
+    transition-duration: 150ms;
+    transition-timing-function: ease;
+  }
+  /* Logs, paths and IDs read exactly as written: no coding ligatures ("->" as an arrow, "!=" as "≠"). */
+  :where(code, kbd, samp, pre, .font-mono) {
+    font-variant-ligatures: none;
+  }
+  /* No browser-drawn widgets anywhere: spinners, search clear buttons, reveal eyes. */
+  input::-webkit-outer-spin-button,
+  input::-webkit-inner-spin-button,
+  input::-webkit-search-cancel-button,
+  input::-webkit-calendar-picker-indicator,
+  input::-ms-reveal {
+    display: none;
+    -webkit-appearance: none;
+  }
+  input:-webkit-autofill {
+    -webkit-box-shadow: 0 0 0 40px var(--bg-elevated) inset;
+    -webkit-text-fill-color: var(--label);
+  }
+  img {
+    -webkit-user-drag: none;
+  }
+  :focus-visible {
+    outline: 3px solid color-mix(in srgb, var(--accent) 55%, transparent);
+    outline-offset: 1px;
+  }
+  .selectable,
+  .selectable * {
+    user-select: text;
+    cursor: text;
+  }
+  /* Thin overlay scrollbars like macOS */
+  ::-webkit-scrollbar {
+    width: 11px;
+    height: 11px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--fill-1);
+    border-radius: 99px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--label-3);
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-track,
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+}
+
+@utility glass {
+  background: rgb(var(--glass-rgb) / var(--glass-alpha));
+  backdrop-filter: blur(30px) saturate(1.8);
+  box-shadow:
+    var(--shadow-glass),
+    inset 0 0.5px 0 var(--glass-highlight),
+    0 0 0 0.5px var(--glass-edge);
+}
+
+/* In-flow panels (sidebar, docked inspector) sit on the content surface itself: the glass tint and
+   edge, but no drop shadow — a shadow would darken the gutters on three sides only (the content
+   area paints over it on the fourth) and no backdrop blur (there's never anything behind them). */
+@utility glass-panel {
+  background: rgb(var(--glass-rgb) / var(--glass-alpha));
+  box-shadow:
+    inset 0 0.5px 0 var(--glass-highlight),
+    0 0 0 0.5px var(--glass-edge);
+}
+
+@utility glass-strong {
+  background: rgb(var(--glass-rgb) / calc(var(--glass-alpha) * 0.5 + 0.48));
+  backdrop-filter: blur(40px) saturate(1.8);
+  box-shadow:
+    var(--shadow-pop),
+    inset 0 0.5px 0 var(--glass-highlight),
+    0 0 0 0.5px var(--glass-edge);
+}
+
+@utility drag {
+  -webkit-app-region: drag;
+}
+@utility no-drag {
+  -webkit-app-region: no-drag;
+}
+
+@utility tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+@utility card {
+  background: var(--bg-elevated);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-card);
+}
+
+@utility hairline-b {
+  box-shadow: inset 0 -0.5px 0 var(--separator);
+}
+
+@utility hairline-t {
+  box-shadow: inset 0 0.5px 0 var(--separator);
+}
+
+@utility press {
+  transition:
+    transform 160ms var(--ease-snappy),
+    background-color 160ms ease,
+    opacity 160ms ease;
+  &:active {
+    transform: scale(0.97);
+  }
+}
+
+/* ── Motion ───────────────────────────────────────────────────────────────── */
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.995);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes slide-in-right {
+  from {
+    opacity: 0;
+    transform: translateX(24px) scale(0.985);
+  }
+}
+@keyframes sheet-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.96);
+  }
+}
+@keyframes row-in {
+  from {
+    background-color: var(--accent-tint);
+  }
+}
+@keyframes pulse-ring {
+  0% {
+    transform: scale(0.8);
+    opacity: 0.7;
+  }
+  100% {
+    transform: scale(2.4);
+    opacity: 0;
+  }
+}
+@keyframes shimmer {
+  from {
+    background-position: -200px 0;
+  }
+  to {
+    background-position: 200px 0;
+  }
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.95);
+  }
+}
+
+@utility animate-rise {
+  animation: rise-in 520ms var(--ease-smooth) both;
+}
+@utility animate-fade {
+  animation: fade-in 240ms ease both;
+}
+@utility animate-slide-right {
+  animation: slide-in-right 560ms var(--ease-spring) both;
+}
+@utility animate-sheet {
+  animation: sheet-in 600ms var(--ease-spring) both;
+}
+@utility animate-row {
+  animation: row-in 1200ms ease-out both;
+}
+@utility animate-toast {
+  animation: toast-in 620ms var(--ease-spring) both;
+}
+@keyframes bell-ring {
+  0%, 60%, 100% {
+    transform: rotate(0);
+  }
+  10%, 30%, 50% {
+    transform: rotate(-16deg);
+  }
+  20%, 40% {
+    transform: rotate(16deg);
+  }
+}
+@utility animate-bell {
+  animation: bell-ring 1.1s ease-in-out infinite;
+  transform-origin: 50% 20%;
+}
+@keyframes alarm-glow {
+  0%, 100% {
+    box-shadow: 0 10px 30px rgb(255 59 48 / 0.35), 0 0 0 0 rgb(255 59 48 / 0.5);
+  }
+  50% {
+    box-shadow: 0 10px 30px rgb(255 59 48 / 0.35), 0 0 0 6px rgb(255 59 48 / 0);
+  }
+}
+@utility animate-alarm {
+  animation:
+    toast-in 620ms var(--ease-spring) both,
+    alarm-glow 1.4s ease-out 620ms infinite;
+}
+
+.live-dot::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 99px;
+  background: currentColor;
+  animation: pulse-ring 1.8s var(--ease-smooth) infinite;
+}
+
+.skeleton {
+  background: linear-gradient(90deg, var(--fill-3) 0, var(--fill-2) 40px, var(--fill-3) 80px);
+  background-size: 400px 100%;
+  animation: shimmer 1.4s linear infinite;
+  border-radius: 6px;
+}
+
+.spinner {
+  animation: spin 900ms linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+  }
+  .live-dot::after {
+    display: none;
+  }
+}
+
+/* Reduce Transparency: solid surfaces everywhere */
+:root[data-transparency='reduced'] .glass,
+:root[data-transparency='reduced'] .glass-panel,
+:root[data-transparency='reduced'] .glass-strong {
+  background: var(--bg-elevated);
+  backdrop-filter: none;
+}
+
+/* Compact density */
+:root[data-density='compact'] {
+  --row-h: 26px;
+}
+:root {
+  --row-h: 30px;
+}
+
+/* Windows: leave room for the native caption buttons (min / max / close). */
+:root[data-platform='win32'] .toolbar-end {
+  margin-right: 138px;
+}
