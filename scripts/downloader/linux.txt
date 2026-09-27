@@ -1,0 +1,30 @@
+Flobi Pulse {version} for Linux (x64)
+=====================================
+
+INSTALL
+
+1. Open a terminal in this folder and run:
+
+     ./install.sh
+
+   It asks where to put the app (default: ~/Applications), then adds Flobi Pulse to
+   your app menu and your Desktop. No sudo needed.
+
+2. If it doesn't start, your system is missing FUSE 2, which AppImages need:
+     Ubuntu 24.04 and newer:  sudo apt install libfuse2t64
+     Ubuntu 22.04, Debian:    sudo apt install libfuse2
+     Fedora:                  sudo dnf install fuse-libs
+
+3. Choose the service-account key file (.json) your admin gave you.
+   Flobi Pulse only reads: it can't change anything in the cluster.
+
+UPDATES
+
+When a new version comes out, an "Update available" button appears at the top of the
+app. Click it: Flobi Pulse downloads the update, replaces itself and restarts. Your
+settings and keys stay. You won't need this zip again.
+
+UNINSTALL
+
+Delete Flobi-Pulse.AppImage from the folder you chose, plus
+~/.local/share/applications/flobi-pulse.desktop and the Desktop shortcut.

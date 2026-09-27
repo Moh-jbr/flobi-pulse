@@ -1,0 +1,425 @@
+import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react';
+import { createPortal } from 'react-dom';
+import Icon from './icons.jsx';
+import { invoke } from '../lib/store.js';
+
+export const cx = (...a) => a.filter(Boolean).join(' ');
+
+export const TONE = {
+  green: { fg: 'text-green', bg: 'bg-green-tint', dot: 'bg-green' },
+  orange: { fg: 'text-orange', bg: 'bg-orange-tint', dot: 'bg-orange' },
+  red: { fg: 'text-red', bg: 'bg-red-tint', dot: 'bg-red' },
+  gray: { fg: 'text-gray', bg: 'bg-gray-tint', dot: 'bg-gray' },
+  accent: { fg: 'text-accent', bg: 'bg-accent-tint', dot: 'bg-accent' },
+};
+
+export const HEALTH = {
+  healthy: { tone: 'green', label: 'Healthy', icon: 'check' },
+  idle: { tone: 'gray', label: 'Scaled to zero', icon: 'dot' },
+  deploying: { tone: 'accent', label: 'Rolling out', icon: 'refresh' },
+  degraded: { tone: 'orange', label: 'Degraded', icon: 'errors' },
+  down: { tone: 'red', label: 'Down', icon: 'x' },
+  unknown: { tone: 'gray', label: 'Unknown', icon: 'dot' },
+};
+
+export const STATE_TONE = { ok: 'green', warn: 'orange', bad: 'red', pending: 'accent', done: 'gray' };
+export const SEV_TONE = { critical: 'red', warning: 'orange', info: 'accent' };
+
+// ── Buttons ──────────────────────────────────────────────────────────────────
+export function Button({ variant = 'secondary', size = 'md', icon, iconRight, children, className, loading, ...rest }) {
+  const sizes = { sm: 'h-6 px-2.5 text-callout gap-1', md: 'h-7 px-3 text-body gap-1.5', lg: 'h-9 px-4 text-title3 gap-2' };
+  const variants = {
+    primary: 'bg-accent text-white shadow-[0_1px_2px_rgb(0_0_0/0.12),inset_0_0.5px_0_rgb(255_255_255/0.35)] hover:brightness-110',
+    secondary: 'bg-fill-3 hover:bg-fill-2 text-label',
+    glass: 'glass hover:brightness-[1.03] text-label',
+    plain: 'hover:bg-fill-3 text-label',
+    tinted: 'bg-accent-tint text-accent hover:brightness-105',
+    danger: 'bg-red-tint text-red hover:brightness-105',
+  };
+  return (
+    <button
+      type="button"
+      className={cx('no-drag press inline-flex shrink-0 items-center justify-center rounded-full font-medium whitespace-nowrap disabled:opacity-40 disabled:pointer-events-none', sizes[size], variants[variant], className)}
+      disabled={loading || rest.disabled}
+      {...rest}
+    >
+      {loading ? <Spinner size={size === 'lg' ? 16 : 13} /> : icon ? <Icon name={icon} size={size === 'lg' ? 17 : 15} /> : null}
+      {children}
+      {iconRight && <Icon name={iconRight} size={13} className="opacity-60" />}
+    </button>
+  );
+}
+
+export function IconButton({ icon, label, active, className, size = 28, iconSize = 16, variant = 'plain', badge, ...rest }) {
+  return (
+    <button
+      type="button"
+      title={label}
+      aria-label={label}
+      className={cx(
+        'no-drag press relative inline-flex shrink-0 items-center justify-center rounded-full text-label-2 hover:text-label',
+        variant === 'glass' ? 'glass' : 'hover:bg-fill-3',
+        active && 'bg-accent-tint !text-accent',
+        className,
+      )}
+      style={{ width: size, height: size }}
+      {...rest}
+    >
+      <Icon name={icon} size={iconSize} />
+      {badge ? (
+        <span className="absolute -top-0.5 -right-0.5 min-w-4 h-4 px-1 rounded-full bg-red text-white text-footnote font-semibold grid place-items-center tabular shadow-[0_0_0_2px_var(--bg-content)]">{badge > 99 ? '99+' : badge}</span>
+      ) : null}
+    </button>
+  );
+}
+
+export function Spinner({ size = 14, className }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 20 20" className={cx('spinner text-label-3', className)} aria-hidden="true">
+      <circle cx="10" cy="10" r="7.5" fill="none" stroke="currentColor" strokeOpacity="0.25" strokeWidth="2.4" />
+      <path d="M10 2.5a7.5 7.5 0 0 1 7.5 7.5" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+// ── Status ───────────────────────────────────────────────────────────────────
+export function StatusDot({ tone = 'gray', pulse, size = 8, className }) {
+  return (
+    <span className={cx('relative inline-block shrink-0 rounded-full', TONE[tone]?.dot, TONE[tone]?.fg, pulse && 'live-dot', className)} style={{ width: size, height: size }} />
+  );
+}
+
+export function Pill({ tone = 'gray', icon, children, className, strong }) {
+  return (
+    <span className={cx('inline-flex items-center gap-1 h-5 px-2 rounded-full text-subheadline font-semibold whitespace-nowrap', TONE[tone]?.bg, strong ? TONE[tone]?.fg : 'text-label', className)}>
+      {icon ? <Icon name={icon} size={11} strokeWidth={2.2} className={TONE[tone]?.fg} /> : <StatusDot tone={tone} size={6} />}
+      {children}
+    </span>
+  );
+}
+
+export function HealthPill({ health, className }) {
+  const h = HEALTH[health] || HEALTH.unknown;
+  return (
+    <Pill tone={h.tone} icon={h.icon} className={className}>
+      {h.label}
+    </Pill>
+  );
+}
+
+export function StatusCode({ status }) {
+  const tone = status >= 500 || !status ? 'red' : status >= 400 ? 'orange' : status >= 300 ? 'gray' : 'green';
+  return (
+    <span className={cx('inline-flex items-center justify-center h-5 min-w-10 px-1.5 rounded-md text-subheadline font-semibold tabular font-mono', TONE[tone].bg)}>
+      <span className={TONE[tone].fg}>{status || 'ERR'}</span>
+    </span>
+  );
+}
+
+// ── Surfaces ─────────────────────────────────────────────────────────────────
+export function Card({ children, className, pad = true, as: As = 'div', ...rest }) {
+  return (
+    <As className={cx('card', pad && 'p-4', className)} {...rest}>
+      {children}
+    </As>
+  );
+}
+
+/**
+ * An (i) that explains the thing next to it. Tooltips draws the card on hover,
+ * click or keyboard focus; screen readers get the same words.
+ * @param {{title: string, body: string, note?: string, className?: string}} p
+ */
+export function InfoTip({ title, body, note, className }) {
+  return (
+    <button
+      type="button"
+      data-info={title}
+      data-info-body={body}
+      data-info-note={note || undefined}
+      aria-label={`About ${title}`}
+      aria-description={[body, note].filter(Boolean).join(' ')}
+      className={cx('no-drag inline-grid place-items-center w-4 h-4 rounded-full shrink-0 text-label-3 hover:text-label-2 focus-visible:text-label-2 cursor-help', className)}
+    >
+      <Icon name="info" size={13} strokeWidth={1.9} />
+    </button>
+  );
+}
+
+export function SectionTitle({ title, subtitle, right, className, icon, info }) {
+  return (
+    <div className={cx('flex items-end justify-between gap-4 mb-2.5 px-1', className)}>
+      <div className="min-w-0 flex-1">
+        <h2 className="text-title3 font-semibold flex items-center gap-1.5">
+          {icon && <Icon name={icon} size={15} className="text-label-2" />}
+          {title}
+          {info && <InfoTip {...info} />}
+        </h2>
+        {subtitle && <p className="text-callout text-label-2 mt-0.5 truncate">{subtitle}</p>}
+      </div>
+      {right && <div className="flex items-center gap-2 shrink-0">{right}</div>}
+    </div>
+  );
+}
+
+export function Empty({ icon = 'check', title, message, action, tone = 'green', className, compact }) {
+  if (compact) {
+    return (
+      <div className={cx('flex items-center gap-3 px-4 py-4 animate-fade', className)}>
+        <div className={cx('w-7 h-7 rounded-full grid place-items-center shrink-0', TONE[tone]?.bg)}>
+          <Icon name={icon} size={14} className={TONE[tone]?.fg} strokeWidth={2} />
+        </div>
+        <div className="min-w-0">
+          <div className="text-headline font-semibold">{title}</div>
+          {message && <div className="text-callout text-label-2">{message}</div>}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className={cx('flex flex-col items-center justify-center text-center py-14 px-6 animate-fade', className)}>
+      <div className={cx('w-12 h-12 rounded-2xl grid place-items-center mb-3', TONE[tone]?.bg)}>
+        <Icon name={icon} size={24} className={TONE[tone]?.fg} strokeWidth={1.8} />
+      </div>
+      <div className="text-title3 font-semibold">{title}</div>
+      {message && <div className="text-body text-label-2 mt-1 max-w-sm">{message}</div>}
+      {action && <div className="mt-4">{action}</div>}
+    </div>
+  );
+}
+
+export function Kbd({ children }) {
+  return <kbd className="inline-flex items-center h-[18px] px-1.5 rounded-[5px] bg-fill-3 text-footnote font-medium text-label-2 font-sans">{children}</kbd>;
+}
+
+// ── Inputs ───────────────────────────────────────────────────────────────────
+export function Segmented({ value, onChange, options, size = 'md', className }) {
+  const ref = useRef(null);
+  const [thumb, setThumb] = useState(null);
+  const measure = useCallback(() => {
+    const el = ref.current?.querySelector(`[data-v="${CSS.escape(String(value))}"]`);
+    if (el) setThumb({ left: el.offsetLeft, width: el.offsetWidth });
+  }, [value]);
+  useLayoutEffect(measure, [measure, options.length]);
+  useEffect(() => {
+    const ro = new ResizeObserver(measure);
+    if (ref.current) ro.observe(ref.current);
+    return () => ro.disconnect();
+  }, [measure]);
+  const h = size === 'sm' ? 'h-6' : 'h-7';
+  return (
+    <div ref={ref} role="tablist" className={cx('no-drag relative inline-flex items-center p-0.5 rounded-full bg-fill-3', h, className)}>
+      {thumb && (
+        <span
+          className="absolute top-0.5 bottom-0.5 rounded-full bg-thumb shadow-[0_1px_3px_rgb(0_0_0/0.14),0_0_0_0.5px_rgb(0_0_0/0.05)]"
+          style={{ left: thumb.left, width: thumb.width, transition: 'left 420ms var(--ease-spring), width 420ms var(--ease-spring)' }}
+        />
+      )}
+      {options.map((o) => (
+        <button
+          key={String(o.value)}
+          data-v={String(o.value)}
+          role="tab"
+          aria-selected={o.value === value}
+          type="button"
+          onClick={() => onChange(o.value)}
+          className={cx('relative z-10 h-full px-3 rounded-full inline-flex items-center gap-1.5 whitespace-nowrap transition-colors duration-200', size === 'sm' ? 'text-callout' : 'text-body', o.value === value ? 'text-label font-semibold' : 'text-label-2 hover:text-label')}
+        >
+          {o.dot && <StatusDot tone={o.dot} size={6} />}
+          {o.label}
+          {o.count != null && <span className={cx('tabular text-subheadline', o.value === value ? 'text-label-2' : 'text-label-3')}>{o.count}</span>}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+export function SearchField({ value, onChange, placeholder = 'Search', className, autoFocus, inputRef, onKeyDown, width = 220 }) {
+  return (
+    <label className={cx('no-drag relative inline-flex items-center h-7 rounded-full bg-fill-3 focus-within:bg-fill-4 focus-within:shadow-[0_0_0_3px_var(--accent-tint)] transition-shadow', className)} style={{ width }}>
+      <Icon name="search" size={14} className="absolute left-2.5 text-label-3" />
+      <input
+        ref={inputRef}
+        value={value}
+        autoFocus={autoFocus}
+        onKeyDown={onKeyDown}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        spellCheck={false}
+        className="w-full h-full bg-transparent pl-8 pr-7 outline-none text-body placeholder:text-label-3"
+      />
+      {value && (
+        <button type="button" onClick={() => onChange('')} className="absolute right-1.5 w-4 h-4 rounded-full bg-label-3 text-content grid place-items-center" aria-label="Clear">
+          <Icon name="x" size={9} strokeWidth={2.6} />
+        </button>
+      )}
+    </label>
+  );
+}
+
+export function TextField({ value, onChange, placeholder, type = 'text', className, mono, ...rest }) {
+  return (
+    <input
+      type={type}
+      value={value ?? ''}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder}
+      spellCheck={false}
+      className={cx('no-drag h-8 w-full rounded-lg bg-fill-4 px-3 text-body outline-none shadow-[inset_0_0_0_0.5px_var(--separator)] focus:shadow-[0_0_0_3px_var(--accent-tint),inset_0_0_0_1px_var(--accent)] placeholder:text-label-3 transition-shadow', mono && 'font-mono text-callout', className)}
+      {...rest}
+    />
+  );
+}
+
+export function Toggle({ checked, onChange, label }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      onClick={() => onChange(!checked)}
+      className={cx('no-drag relative w-[38px] h-[22px] rounded-full shrink-0 transition-colors duration-300', checked ? 'bg-accent' : 'bg-fill-1')}
+    >
+      <span
+        className="absolute top-[2px] left-[2px] w-[18px] h-[18px] rounded-full bg-white shadow-[0_1px_3px_rgb(0_0_0/0.25)]"
+        style={{ transform: `translateX(${checked ? 16 : 0}px)`, transition: 'transform 460ms var(--ease-spring)' }}
+      />
+    </button>
+  );
+}
+
+export function Slider({ value, onChange, min = 0, max = 1, step = 0.01, className }) {
+  const pctv = ((value - min) / (max - min)) * 100;
+  return (
+    <div className={cx('no-drag relative h-6 flex items-center', className)}>
+      <div className="absolute inset-x-0 h-1 rounded-full bg-fill-2" />
+      <div className="absolute left-0 h-1 rounded-full bg-accent" style={{ width: `${pctv}%` }} />
+      <input type="range" min={min} max={max} step={step} value={value} onChange={(e) => onChange(Number(e.target.value))} className="absolute inset-0 w-full opacity-0 cursor-pointer" />
+      <div className="absolute w-[26px] h-[18px] -ml-[13px] rounded-full bg-white shadow-[0_1px_4px_rgb(0_0_0/0.22),0_0_0_0.5px_rgb(0_0_0/0.06)] pointer-events-none" style={{ left: `${pctv}%` }} />
+    </div>
+  );
+}
+
+export function CopyButton({ text, label = 'Copy' }) {
+  const [done, setDone] = useState(false);
+  return (
+    <Button
+      size="sm"
+      variant="plain"
+      icon={done ? 'check' : 'copy'}
+      onClick={async () => {
+        await invoke('clipboard:write', { text });
+        setDone(true);
+        setTimeout(() => setDone(false), 1400);
+      }}
+    >
+      {done ? 'Copied' : label}
+    </Button>
+  );
+}
+
+// ── Meters & stats ───────────────────────────────────────────────────────────
+export function Meter({ value, warn = 0.8, danger = 0.92, className, height = 4 }) {
+  const v = value == null ? null : Math.max(0, Math.min(1, value));
+  const tone = v == null ? 'gray' : v >= danger ? 'red' : v >= warn ? 'orange' : 'accent';
+  const color = { red: 'var(--red)', orange: 'var(--orange)', accent: 'var(--accent)', gray: 'var(--gray)' }[tone];
+  return (
+    <div className={cx('relative w-full rounded-full overflow-hidden', className)} style={{ height, background: `color-mix(in srgb, ${color} 18%, transparent)` }}>
+      {v != null && <div className="absolute inset-y-0 left-0 rounded-full" style={{ width: `${v * 100}%`, background: color, transition: 'width 700ms var(--ease-smooth)' }} />}
+    </div>
+  );
+}
+
+// ── Overlays ─────────────────────────────────────────────────────────────────
+export function Sheet({ open, onClose, children, width = 720, className, label }) {
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e) => e.key === 'Escape' && onClose?.();
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, onClose]);
+  if (!open) return null;
+  return createPortal(
+    <div className="fixed inset-0 z-50 grid place-items-center p-8 no-drag" role="dialog" aria-label={label} aria-modal="true">
+      <div className="absolute inset-0 animate-fade" style={{ background: 'var(--scrim)', backdropFilter: 'blur(2px)' }} onClick={onClose} />
+      <div className={cx('relative glass-strong rounded-[26px] animate-sheet max-h-full flex flex-col overflow-hidden', className)} style={{ width }}>
+        {children}
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+export function Popover({ open, onClose, anchor, children, width = 380, align = 'end' }) {
+  const [pos, setPos] = useState(null);
+  useLayoutEffect(() => {
+    if (!open || !anchor?.current) return;
+    const r = anchor.current.getBoundingClientRect();
+    const left = align === 'end' ? Math.max(8, r.right - width) : Math.min(window.innerWidth - width - 8, r.left);
+    setPos({ top: r.bottom + 8, left });
+  }, [open, anchor, width, align]);
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e) => e.key === 'Escape' && onClose();
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, onClose]);
+  if (!open || !pos) return null;
+  return createPortal(
+    <div className="fixed inset-0 z-40 no-drag" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="absolute glass-strong rounded-[20px] animate-sheet overflow-hidden flex flex-col" style={{ top: pos.top, left: pos.left, width: Math.min(width, window.innerWidth - 16), maxHeight: window.innerHeight - pos.top - 12, transformOrigin: align === 'end' ? 'top right' : 'top left' }}>
+        {children}
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+export function Disclosure({ title, children, defaultOpen = false, right }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div>
+      <button type="button" onClick={() => setOpen(!open)} className="w-full flex items-center gap-1.5 py-1.5 text-headline font-semibold text-label-2 hover:text-label">
+        <Icon name="chevronRight" size={12} strokeWidth={2.2} style={{ transform: open ? 'rotate(90deg)' : 'none', transition: 'transform 320ms var(--ease-spring)' }} />
+        <span className="flex-1 text-left">{title}</span>
+        {right}
+      </button>
+      {open && <div className="animate-fade">{children}</div>}
+    </div>
+  );
+}
+
+/** Window width, updated on resize (for layouts that change with the window size). */
+export function useWindowWidth() {
+  const [w, setW] = useState(typeof window !== 'undefined' ? window.innerWidth : 1400);
+  useEffect(() => {
+    const on = () => setW(window.innerWidth);
+    window.addEventListener('resize', on);
+    return () => window.removeEventListener('resize', on);
+  }, []);
+  return w;
+}
+
+/** Re-render every `ms` (for "3m ago" labels). */
+export function useNow(ms = 10_000) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), ms);
+    return () => clearInterval(t);
+  }, [ms]);
+  return now;
+}
+
+export function KeyValue({ items, className }) {
+  return (
+    <dl className={cx('grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-callout', className)}>
+      {items.filter(Boolean).map(([k, v]) => (
+        <div key={k} className="contents">
+          <dt className="text-label-2 whitespace-nowrap">{k}</dt>
+          <dd className="text-label min-w-0 truncate selectable tabular">{v ?? '—'}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}

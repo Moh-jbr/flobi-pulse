@@ -1,0 +1,189 @@
+// A minimal gRPC-over-HTTP/2 client (only what Cloud Logging's TailLogEntries
+// needs), built on node:http2 so the app ships without a gRPC library.
+//
+// gRPC framing: each message is prefixed by 1 byte "compressed" flag and a
+// 4-byte big-endian length. Status arrives in HTTP/2 trailers (grpc-status,
+// grpc-message) or, for immediate failures, in the response headers.
+import http2 from 'node:http2';
+import zlib from 'node:zlib';
+import { checkRequest } from './guard.mjs';
+
+export const GRPC_CODE = {
+  OK: 0,
+  CANCELLED: 1,
+  UNKNOWN: 2,
+  INVALID_ARGUMENT: 3,
+  DEADLINE_EXCEEDED: 4,
+  NOT_FOUND: 5,
+  ALREADY_EXISTS: 6,
+  PERMISSION_DENIED: 7,
+  RESOURCE_EXHAUSTED: 8,
+  FAILED_PRECONDITION: 9,
+  ABORTED: 10,
+  OUT_OF_RANGE: 11,
+  UNIMPLEMENTED: 12,
+  INTERNAL: 13,
+  UNAVAILABLE: 14,
+  DATA_LOSS: 15,
+  UNAUTHENTICATED: 16,
+};
+const CODE_NAME = Object.fromEntries(Object.entries(GRPC_CODE).map(([k, v]) => [v, k]));
+
+export function frameMessage(buf) {
+  const header = Buffer.alloc(5);
+  header.writeUInt8(0, 0);
+  header.writeUInt32BE(buf.length, 1);
+  return Buffer.concat([header, buf]);
+}
+
+/** Incremental parser for length-prefixed gRPC messages. */
+export class FrameParser {
+  constructor(maxMessageBytes = 64 * 1024 * 1024) {
+    this.buf = Buffer.alloc(0);
+    this.max = maxMessageBytes;
+  }
+  push(chunk) {
+    this.buf = this.buf.length ? Buffer.concat([this.buf, chunk]) : chunk;
+    const out = [];
+    while (this.buf.length >= 5) {
+      const compressed = this.buf.readUInt8(0) === 1;
+      const len = this.buf.readUInt32BE(1);
+      if (len > this.max) throw new Error(`gRPC message too large (${len} bytes)`);
+      if (this.buf.length < 5 + len) break;
+      out.push({ compressed, data: this.buf.subarray(5, 5 + len) });
+      this.buf = this.buf.subarray(5 + len);
+    }
+    return out;
+  }
+}
+
+function decodeGrpcMessage(v) {
+  if (!v) return '';
+  try {
+    return decodeURIComponent(String(v));
+  } catch {
+    return String(v);
+  }
+}
+
+export class GrpcError extends Error {
+  constructor(code, message) {
+    super(message || CODE_NAME[code] || `gRPC error ${code}`);
+    this.name = 'GrpcError';
+    this.code = code;
+    this.codeName = CODE_NAME[code] || 'UNKNOWN';
+  }
+}
+
+/**
+ * Opens a client→server + server→client stream, sends one request message and
+ * keeps the stream open. onMessage receives each decoded (decompressed) message
+ * payload. onEnd is called exactly once with a GrpcError (code OK on clean end).
+ */
+export function openStream({ origin, path, headers = {}, request, onMessage, onOpen, onEnd, pingIntervalMs = 30_000, connectOptions }) {
+  checkRequest({ method: 'POST', url: origin + path, headers });
+
+  let ended = false;
+  let pingTimer = null;
+  let encoding = 'identity';
+  const parser = new FrameParser();
+
+  const session = http2.connect(origin, connectOptions);
+  const finish = (err) => {
+    if (ended) return;
+    ended = true;
+    clearInterval(pingTimer);
+    try {
+      session.destroy();
+    } catch {}
+    onEnd?.(err);
+  };
+
+  session.on('error', (e) => finish(new GrpcError(GRPC_CODE.UNAVAILABLE, e.message)));
+  session.on('goaway', () => {
+    /* server will close the stream; 'close' handles it */
+  });
+
+  const stream = session.request(
+    {
+      ':method': 'POST',
+      ':path': path,
+      'content-type': 'application/grpc',
+      te: 'trailers',
+      'grpc-accept-encoding': 'identity,gzip',
+      'user-agent': 'flobi-pulse/1.0 (hand-rolled grpc)',
+      ...headers,
+    },
+    { endStream: false },
+  );
+
+  stream.on('response', (h) => {
+    const status = Number(h[':status']);
+    if (h['grpc-encoding']) encoding = String(h['grpc-encoding']);
+    if (h['grpc-status'] !== undefined) {
+      const code = Number(h['grpc-status']);
+      finish(new GrpcError(code, decodeGrpcMessage(h['grpc-message'])));
+      return;
+    }
+    if (status !== 200) {
+      finish(new GrpcError(status === 401 ? GRPC_CODE.UNAUTHENTICATED : status === 403 ? GRPC_CODE.PERMISSION_DENIED : GRPC_CODE.UNAVAILABLE, `HTTP ${status}`));
+      return;
+    }
+    try {
+      onOpen?.();
+    } catch {}
+  });
+
+  stream.on('data', (chunk) => {
+    let msgs;
+    try {
+      msgs = parser.push(chunk);
+    } catch (e) {
+      finish(new GrpcError(GRPC_CODE.INTERNAL, e.message));
+      stream.close(http2.constants.NGHTTP2_CANCEL);
+      return;
+    }
+    for (const m of msgs) {
+      let data = m.data;
+      if (m.compressed) {
+        try {
+          data = encoding === 'gzip' ? zlib.gunzipSync(data) : data;
+        } catch (e) {
+          finish(new GrpcError(GRPC_CODE.INTERNAL, `decompress failed: ${e.message}`));
+          return;
+        }
+      }
+      try {
+        onMessage(data);
+      } catch (e) {
+        console.warn('[grpc] message handler failed:', e?.message);
+      }
+    }
+  });
+
+  stream.on('trailers', (t) => {
+    const code = t['grpc-status'] !== undefined ? Number(t['grpc-status']) : GRPC_CODE.UNKNOWN;
+    finish(new GrpcError(code, decodeGrpcMessage(t['grpc-message'])));
+  });
+  stream.on('error', (e) => finish(new GrpcError(GRPC_CODE.UNAVAILABLE, e.message)));
+  stream.on('close', () => finish(new GrpcError(GRPC_CODE.UNAVAILABLE, 'stream closed')));
+
+  stream.write(frameMessage(request));
+
+  pingTimer = setInterval(() => {
+    try {
+      session.ping(() => {});
+    } catch {}
+  }, pingIntervalMs);
+  pingTimer.unref?.();
+
+  return {
+    close() {
+      if (ended) return;
+      try {
+        stream.close(http2.constants.NGHTTP2_CANCEL);
+      } catch {}
+      finish(new GrpcError(GRPC_CODE.CANCELLED, 'closed by client'));
+    },
+  };
+}

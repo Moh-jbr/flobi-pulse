@@ -1,0 +1,34 @@
+Flobi Pulse {version} for macOS
+===============================
+
+INSTALL
+
+1. Double-click "Flobi-Pulse-{version}.dmg" and drag Flobi Pulse into the Applications
+   folder. Keep it in Applications, so it can update itself.
+
+2. Open Applications and double-click Flobi Pulse.
+   The first time, macOS says it can't check the app, because it isn't signed with a paid
+   Apple certificate. It's the same app your team builds from github.com/Moh-jbr/flobi-pulse.
+   Click "Done", then:
+     System Settings > Privacy & Security > scroll down > "Open Anyway" next to Flobi Pulse,
+   and confirm with your password or Touch ID. You only do this once.
+
+3. Want it on the Desktop or in the Dock?
+   Desktop: in Applications, hold Option + Command and drag Flobi Pulse to the Desktop
+            (this makes a shortcut).
+   Dock:    while it's open, right-click its Dock icon > Options > Keep in Dock.
+
+4. Choose the service-account key file (.json) your admin gave you.
+   Flobi Pulse only reads: it can't change anything in the cluster.
+
+Works on Apple Silicon and Intel Macs.
+
+UPDATES
+
+When a new version comes out, an "Update available" button appears at the top of the
+app. Click it: Flobi Pulse downloads the update, replaces itself and restarts. Your
+settings and keys stay. You won't need this zip again.
+
+UNINSTALL
+
+Quit Flobi Pulse (menu bar icon > Quit), then drag it from Applications to the Trash.
