@@ -1,11 +1,11 @@
 # Publishing a new version:   npm version patch   then   git push --follow-tags
 #
 # The pushed tag (v1.2.3) builds Windows, macOS and Linux in parallel and publishes
-# a GitHub release. Installed apps see it within 2 hours (or on their next start)
-# and show "Update available".
+# a GitHub release. Installed apps see it on their next start, when their window
+# is focused, or within the hour, and show "Update available".
 #
 # Cost: $0. The repo is public, and public repos get GitHub's standard runners
-# (ubuntu-latest, windows-latest, macos-latest) for free. Don't switch to larger
+# (ubuntu-24.04, windows-latest, macos-latest) for free. Don't switch to larger
 # runners, which are billed even on public repos, and don't make the repo private.
 name: Release
 
@@ -28,7 +28,9 @@ jobs:
         include:
           - { name: Windows, os: windows-latest, target: win }
           - { name: macOS, os: macos-latest, target: mac }
-          - { name: Linux, os: ubuntu-latest, target: linux }
+          # Pinned: ubuntu-latest moves to Ubuntu 26 on 2026-10-19. Move up on purpose,
+          # after a test build, not because the label changed underneath a release.
+          - { name: Linux, os: ubuntu-24.04, target: linux }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
@@ -68,7 +70,7 @@ jobs:
   release:
     name: Publish the release
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v8
         with:
