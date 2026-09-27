@@ -31,7 +31,7 @@ export function Button({ variant = 'secondary', size = 'md', icon, iconRight, ch
   const variants = {
     primary: 'bg-accent text-white shadow-[0_1px_2px_rgb(0_0_0/0.12),inset_0_0.5px_0_rgb(255_255_255/0.35)] hover:brightness-110',
     secondary: 'bg-fill-3 hover:bg-fill-2 text-label',
-    glass: 'glass hover:brightness-[1.03] text-label',
+    glass: 'glass text-label',
     plain: 'hover:bg-fill-3 text-label',
     tinted: 'bg-accent-tint text-accent hover:brightness-105',
     danger: 'bg-red-tint text-red hover:brightness-105',
@@ -362,7 +362,7 @@ export function Sheet({ open, onClose, children, width = 720, className, label }
   if (!open) return null;
   return createPortal(
     <div className="fixed inset-0 z-50 grid place-items-center p-8 no-drag" role="dialog" aria-label={label} aria-modal="true">
-      <div className="absolute inset-0 animate-fade" style={{ background: 'var(--scrim)', backdropFilter: 'blur(2px)' }} onClick={onClose} />
+      <div className="absolute inset-0 animate-fade" style={{ background: 'var(--scrim)' }} onClick={onClose} />
       <div className={cx('relative glass-strong rounded-[26px] animate-sheet max-h-full flex flex-col overflow-hidden', className)} style={{ width }}>
         {children}
       </div>

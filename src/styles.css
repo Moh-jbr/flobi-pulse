@@ -5,8 +5,9 @@
   • Type: the macOS HIG text styles (13 pt body), SF Pro on Mac, Segoe UI Variable on Windows.
   • Space: 4 pt base, 8 pt grid.
   • Shape: concentric radii (inner radius = outer radius − padding).
-  • Material: glass only on the navigation layer (sidebar, toolbars, sheets, popovers).
-    Content (tables, logs, charts) sits on solid surfaces for legibility.
+  • Material: tinted glass only on the navigation layer (sidebar, toolbars, sheets, popovers),
+    never a backdrop blur (see @utility glass). Content (tables, logs, charts) sits on solid
+    surfaces for legibility.
   • Transparency: user-adjustable "Clear ↔ Tinted" like OS 27 (--glass-alpha).
   • Motion: springs; everything collapses to fades with Reduce Motion.
 */
@@ -273,13 +274,19 @@
   }
 }
 
+/* No backdrop-filter anywhere. The window is solid, so a blur only ever showed the app's own
+   content, and on macOS it makes Chromium switch compositing paths whenever something repaints
+   behind it, which flickers on every hover. The floating surfaces are tinted densely enough to
+   read without it. (Same for hover: no `filter` on these, it forces the same switch.) */
 @utility glass {
-  background: rgb(var(--glass-rgb) / var(--glass-alpha));
-  backdrop-filter: blur(30px) saturate(1.8);
+  background: rgb(var(--glass-rgb) / calc(var(--glass-alpha) * 0.5 + 0.48));
   box-shadow:
     var(--shadow-glass),
     inset 0 0.5px 0 var(--glass-highlight),
     0 0 0 0.5px var(--glass-edge);
+  &:is(button):hover {
+    background-image: linear-gradient(var(--fill-4), var(--fill-4));
+  }
 }
 
 /* In-flow panels (sidebar, docked inspector) sit on the content surface itself: the glass tint and
@@ -293,8 +300,7 @@
 }
 
 @utility glass-strong {
-  background: rgb(var(--glass-rgb) / calc(var(--glass-alpha) * 0.5 + 0.48));
-  backdrop-filter: blur(40px) saturate(1.8);
+  background: rgb(var(--glass-rgb) / calc(var(--glass-alpha) * 0.1 + 0.9));
   box-shadow:
     var(--shadow-pop),
     inset 0 0.5px 0 var(--glass-highlight),
@@ -483,8 +489,7 @@
 :root[data-transparency='reduced'] .glass,
 :root[data-transparency='reduced'] .glass-panel,
 :root[data-transparency='reduced'] .glass-strong {
-  background: var(--bg-elevated);
-  backdrop-filter: none;
+  background-color: var(--bg-elevated);
 }
 
 /* Compact density */
