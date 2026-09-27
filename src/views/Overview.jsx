@@ -5,6 +5,30 @@ import { Card, SectionTitle, Segmented, HealthPill, StatusDot, Meter, cx, STATE_
 import { Sparkline, UptimeBars } from '../components/charts.jsx';
 import Icon from '../components/icons.jsx';
 import { compact, pct, ms, ago, short, num } from '../lib/format.js';
+import ExportButton from '../components/ExportButton.jsx';
+
+const SERVICE_COLUMNS = [
+  { label: 'Service', get: (s) => s.short },
+  { label: 'Workload', get: (s) => s.name },
+  { label: 'Health', get: (s) => s.health },
+  { label: 'Why', get: (s) => (s.health === 'healthy' ? '' : (s.reasons || []).join(' · ')) },
+  { label: 'Pods ready', get: (s) => s.ready },
+  { label: 'Pods wanted', get: (s) => s.desired },
+  { label: 'CPU %', get: (s) => (s.cpuPct != null ? Math.round(s.cpuPct * 1000) / 10 : '') },
+  { label: 'Memory %', get: (s) => (s.memPct != null ? Math.round(s.memPct * 1000) / 10 : '') },
+  { label: 'Requests / min', get: (s) => (s.hosts?.length && s.rpm != null ? s.rpm : '') },
+  { label: 'Errors / min', get: (s) => s.errorsPerMin || 0 },
+  { label: 'Restarts', get: (s) => s.restarts || 0 },
+  { label: 'Public URLs', get: (s) => (s.hosts || []).join(', ') },
+];
+const ENDPOINT_COLUMNS = [
+  { label: 'Endpoint', get: (u) => u.name },
+  { label: 'URL', get: (u) => u.url },
+  { label: 'State', get: (u) => u.state },
+  { label: 'Response (ms)', get: (u) => u.ms ?? '' },
+  { label: 'HTTP status', get: (u) => u.status ?? '' },
+  { label: 'Error', get: (u) => u.error || '' },
+];
 
 const ORDER = { down: 0, degraded: 1, deploying: 2, healthy: 3, idle: 4 };
 
@@ -154,16 +178,19 @@ export default function Overview() {
             title="Services"
             subtitle={`${services.length} workloads in the ${session?.namespace || 'flobi'} namespace`}
             right={
-              <Segmented
-                size="sm"
-                value={filter}
-                onChange={setFilter}
-                options={[
-                  { value: 'all', label: 'All', count: sorted.length },
-                  { value: 'problems', label: 'Problems', count: problems.length, dot: problems.some((p) => p.health === 'down') ? 'red' : problems.length ? 'orange' : undefined },
-                  { value: 'exposed', label: 'Public', count: exposed.length },
-                ]}
-              />
+              <>
+                <Segmented
+                  size="sm"
+                  value={filter}
+                  onChange={setFilter}
+                  options={[
+                    { value: 'all', label: 'All', count: sorted.length },
+                    { value: 'problems', label: 'Problems', count: problems.length, dot: problems.some((p) => p.health === 'down') ? 'red' : problems.length ? 'orange' : undefined },
+                    { value: 'exposed', label: 'Public', count: exposed.length },
+                  ]}
+                />
+                <ExportButton name="services" title="Services" columns={SERVICE_COLUMNS} rows={list} />
+              </>
             }
           />
           {!services.length ? (
@@ -210,7 +237,7 @@ export default function Overview() {
           </section>
 
           <section>
-            <SectionTitle title="Endpoints" subtitle="Checked from this computer every 30 s" right={<button type="button" className="text-callout text-accent" onClick={() => navigate('frontends')}>All</button>} />
+            <SectionTitle title="Endpoints" subtitle="Checked from this computer every 30 s" right={<><button type="button" className="text-callout text-accent" onClick={() => navigate('frontends')}>All</button><ExportButton name="endpoints" title="Endpoints" columns={ENDPOINT_COLUMNS} rows={backendUptime} /></>} />
             <Card pad={false} className="divide-y divide-separator">
               {backendUptime.map((u) => (
                 <div key={u.id} className="px-3.5 py-2.5">

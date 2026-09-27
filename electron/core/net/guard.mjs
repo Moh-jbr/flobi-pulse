@@ -39,11 +39,17 @@ const state = {
   // "owner/repo" of the app's own GitHub releases (app updates). Set once at
   // startup from package.json and kept across connector restarts.
   updateRepo: null,
+  // The Versions page: the org whose repos' releases may be read, and the one
+  // manifest file listing them. Also set once at startup.
+  github: null, // { owner, manifest: '/repos/<owner>/<repo>/contents/<path>' }
   denied: [], // last few denied attempts, surfaced in Settings → Data sources
 };
 
-export function configureGuard({ projectId, kubernetesHost, sentryHost, uptimeUrls, graphQLQueries, sqlProjects, updateRepo } = {}) {
+export function configureGuard({ projectId, kubernetesHost, sentryHost, uptimeUrls, graphQLQueries, sqlProjects, updateRepo, github } = {}) {
   if (projectId !== undefined) state.projectId = projectId;
+  if (github?.owner && /^[A-Za-z0-9-]+$/.test(github.owner) && /^[A-Za-z0-9._-]+$/.test(github.manifestRepo || '') && /^[A-Za-z0-9._/-]+$/.test(github.manifestPath || '') && !github.manifestPath.includes('..')) {
+    state.github = { owner: github.owner.toLowerCase(), manifest: `/repos/${github.owner}/${github.manifestRepo}/contents/${github.manifestPath}`.toLowerCase() };
+  }
   if (updateRepo && /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/.test(updateRepo)) state.updateRepo = updateRepo.toLowerCase();
   if (sqlProjects) for (const p of sqlProjects) if (new RegExp(`^${PROJECT}$`).test(p)) state.sqlProjects.add(p);
   if (kubernetesHost) state.kubernetesHosts.add(hostOnly(kubernetesHost));
@@ -101,7 +107,7 @@ const K8S_PATHS = [
 const K8S_QUERY_KEYS = new Set(['watch', 'allowWatchBookmarks', 'timeoutSeconds', 'resourceVersion', 'fieldSelector', 'container', 'follow', 'previous', 'tailLines', 'timestamps', 'sinceTime', 'limit', 'continue']);
 
 // Headers the app is allowed to send. Anything else (method overrides etc.) is refused.
-const HEADER_ALLOW = new Set(['authorization', 'content-type', 'accept', 'user-agent', 'content-length', 'cache-control', 'te', 'grpc-accept-encoding', 'x-goog-request-params']);
+const HEADER_ALLOW = new Set(['authorization', 'content-type', 'accept', 'user-agent', 'content-length', 'cache-control', 'te', 'grpc-accept-encoding', 'x-goog-request-params', 'if-none-match']);
 
 const PROJECT = '([a-z][a-z0-9-]{4,28}[a-z0-9])';
 
@@ -228,8 +234,17 @@ export function checkRequest({ method = 'GET', url, headers = {}, body = null })
 
   // ── App updates: this app's own GitHub releases, read and download only ────
   if (host === 'api.github.com') {
-    if (method === 'GET' && state.updateRepo && path.toLowerCase() === `/repos/${state.updateRepo}/releases/latest` && !u.search) return true;
-    return deny("only reading the app's own latest release is allowed on api.github.com", method, url);
+    const p = path.toLowerCase();
+    const raw = String(url).replace(/^https:\/\/[^/]+/i, '').split(/[?#]/)[0];
+    const clean = !/%|\/\.{1,2}(\/|$)|\/\//.test(raw);
+    if (method === 'GET' && clean && state.updateRepo && p === `/repos/${state.updateRepo}/releases/latest` && !u.search) return true;
+    // Versions page: the release manifest, and the releases of the org's repos.
+    if (method === 'GET' && clean && state.github) {
+      if (p === state.github.manifest && !u.search) return true;
+      const m = p.match(/^\/repos\/([a-z0-9-]+)\/([a-z0-9._-]+)\/releases$/);
+      if (m && m[1] === state.github.owner && [...u.searchParams.keys()].every((k) => k === 'per_page' || k === 'page')) return true;
+    }
+    return deny("only reading the app's own releases and the team's release notes is allowed on api.github.com", method, url);
   }
   if (host === 'github.com') {
     // Checked on the path as written, before URL parsing resolves "%2e%2e" or "..".

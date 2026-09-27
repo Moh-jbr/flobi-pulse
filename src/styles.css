@@ -174,11 +174,6 @@
   --code-bg: #111113;
 }
 
-/* Native window material (macOS vibrancy / Windows 11 Mica) shows through. */
-:root[data-material='native'] {
-  --bg-window: transparent;
-}
-
 @layer base {
   html,
   body,

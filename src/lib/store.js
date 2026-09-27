@@ -16,6 +16,7 @@ let state = {
   logsVersion: 0,
   palette: false,
   recapOpen: false,
+  versions: null, // the Versions page (the team's GitHub releases)
   update: null, // app update: { status: idle|checking|available|downloading|installing|error|unsupported, version, progress, error }
   bridgeError: null,
 };
@@ -84,7 +85,6 @@ export async function connect(getBridge) {
     return;
   }
   document.documentElement.dataset.platform = bridge.platform;
-  document.documentElement.dataset.material = bridge.nativeMaterial ? 'native' : 'solid';
   bridge.on((m) => {
     switch (m.t) {
       case 'state':
@@ -125,6 +125,9 @@ export async function connect(getBridge) {
       case 'update':
         setState({ update: m.update });
         break;
+      case 'versions':
+        setState({ versions: m.versions });
+        break;
       case 'alarm':
         setState({ alarm: m.alarm?.ringing ? m.alarm : null });
         if (!m.alarm?.ringing) stopSounds();
@@ -144,7 +147,7 @@ export async function connect(getBridge) {
     }
   });
   const info = await bridge.invoke('app:hello');
-  setState({ info, ready: true, update: info.update || null });
+  setState({ info, ready: true, update: info.update || null, versions: info.versions || null });
   bridge
     .invoke('alarm:state')
     .then((a) => setState({ alarm: a?.ringing ? a : null }))
@@ -164,7 +167,7 @@ export function onFollow(id, fn) {
 }
 
 // ── Navigation ───────────────────────────────────────────────────────────────
-export const VIEWS = ['overview', 'traffic', 'errors', 'crashes', 'logs', 'events', 'infrastructure', 'database', 'frontends', 'timeline', 'settings'];
+export const VIEWS = ['overview', 'recent', 'traffic', 'errors', 'crashes', 'logs', 'events', 'infrastructure', 'database', 'frontends', 'timeline', 'versions', 'settings'];
 
 /** to: { to: view | 'service' | 'pod' | ..., id?, filter?, ... } */
 export function navigate(to) {

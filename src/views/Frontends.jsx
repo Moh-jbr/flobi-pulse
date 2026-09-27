@@ -5,6 +5,51 @@ import { Card, SectionTitle, Empty, Pill, StatusDot, cx, useNow, Button } from '
 import { Sparkline, UptimeBars } from '../components/charts.jsx';
 import Icon from '../components/icons.jsx';
 import { compact, pct, ago, countryName, bytes } from '../lib/format.js';
+import ExportButton from '../components/ExportButton.jsx';
+
+const UPTIME_COLUMNS = [
+  { label: 'App', get: (u) => u.name },
+  { label: 'URL', get: (u) => u.url },
+  { label: 'State', get: (u) => u.state },
+  { label: 'Response (ms)', get: (u) => u.ms ?? '' },
+  { label: 'HTTP status', get: (u) => u.status ?? '' },
+  { label: 'Error', get: (u) => u.error || '' },
+  { label: 'TLS days left', get: (u) => u.certDaysLeft ?? '' },
+];
+const ZONE_COLUMNS = [
+  { label: 'Zone', get: (z) => z.name },
+  { label: 'Plan', get: (z) => z.plan || '' },
+  { label: 'Window', get: (z) => z.windowLabel || 'last hour' },
+  { label: 'Requests', get: (z) => z.totals?.requests ?? '' },
+  { label: 'Cached %', get: (z) => (z.totals?.requests ? Math.round(((z.totals.cached || 0) / z.totals.requests) * 1000) / 10 : '') },
+  { label: '4xx', get: (z) => z.totals?.s4xx ?? '' },
+  { label: '5xx', get: (z) => z.totals?.s5xx ?? '' },
+  { label: '52x', get: (z) => z.totals?.s52x ?? '' },
+  { label: 'Bytes served', get: (z) => z.totals?.bytes ?? '' },
+  { label: 'Top countries', get: (z) => (z.topCountries || []).map((c) => `${c.country} ${c.requests}`).join(', ') },
+];
+const EDGE_5XX_COLUMNS = [
+  { label: 'Host', get: (h) => h.host },
+  { label: '5xx', get: (h) => h.s5xx },
+  { label: '52x (origin unreachable)', get: (h) => h.s52x },
+  { label: 'Status codes', get: (h) => Object.entries(h.codes || {}).map(([code, n]) => `${code}: ${n}`).join(', ') },
+];
+const PAGES_COLUMNS = [
+  { label: 'Project', get: (p) => p.name },
+  { label: 'Domains', get: (p) => (p.domains || []).join(', ') },
+  { label: 'Latest deploy', get: (p) => p.latest?.status || '' },
+  { label: 'Branch', get: (p) => p.latest?.branch || '' },
+  { label: 'Commit', get: (p) => p.latest?.commit || '' },
+  { label: 'Message', get: (p) => p.latest?.message || '' },
+  { label: 'Deployed', get: (p) => (p.latest?.createdAt ? new Date(p.latest.createdAt) : '') },
+];
+const SENTRY_COLUMNS = [
+  { label: 'App', get: (p) => p.project },
+  { label: 'Unresolved issues', get: (p) => p.issues },
+  { label: 'Events (24 h)', get: (p) => p.events },
+  { label: 'Users affected', get: (p) => p.users },
+  { label: 'New issues', get: (p) => p.newIssues },
+];
 
 function ConnectCard({ title, message }) {
   return (
@@ -57,7 +102,7 @@ export default function Frontends() {
   return (
     <ViewScroll>
       <section className="animate-rise">
-        <SectionTitle title="Uptime" subtitle="Each app's home page, checked from this computer every 30 s" />
+        <SectionTitle title="Uptime" subtitle="Each app's home page, checked from this computer every 30 s" right={<ExportButton name="frontend-uptime" title="Uptime" columns={UPTIME_COLUMNS} rows={front} />} />
         <div className="grid grid-cols-[repeat(auto-fill,minmax(230px,1fr))] gap-3">
           {front.map((u) => (
             <Card key={u.id} className={cx('flex flex-col gap-2', u.state === 'down' && 'shadow-[0_0_0_1.5px_var(--red),var(--shadow-card)]')}>
@@ -84,7 +129,7 @@ export default function Frontends() {
       </section>
 
       <section className="mt-8 animate-rise" style={{ animationDelay: '60ms' }}>
-        <SectionTitle title="Cloudflare edge" subtitle="Traffic and errors as Cloudflare sees them — including 52x errors that never reach Google" />
+        <SectionTitle title="Cloudflare edge" subtitle="Traffic and errors as Cloudflare sees them — including 52x errors that never reach Google" right={cfOff ? null : <ExportButton name="cloudflare-zones" title="Cloudflare zones" columns={ZONE_COLUMNS} rows={cf.zones || []} />} />
         {cfOff ? (
           <ConnectCard title="Connect Cloudflare" message="See edge traffic, 52x origin errors and Pages deployments." />
         ) : (
@@ -134,7 +179,12 @@ export default function Frontends() {
             )}
             {(cf.hostErrors || []).length > 0 && (
               <Card pad={false} className="mt-3 overflow-hidden">
-                <div className="px-4 py-2.5 text-headline font-semibold hairline-b">5xx at the edge · last 15 minutes{cf.perHost === false ? ' · whole zone' : ''}</div>
+                <div className="px-4 py-2.5 text-headline font-semibold hairline-b flex items-center gap-2">
+                  <span className="flex-1">5xx at the edge · last 15 minutes{cf.perHost === false ? ' · whole zone' : ''}</span>
+                  <span className="font-normal">
+                    <ExportButton name="cloudflare-edge-5xx" title="Edge 5xx" columns={EDGE_5XX_COLUMNS} rows={cf.hostErrors} />
+                  </span>
+                </div>
                 {cf.hostErrors.map((h) => (
                   <div key={h.host} className="px-4 py-2.5 hairline-b grid grid-cols-[220px_90px_90px_minmax(0,1fr)] gap-4 text-callout items-center">
                     <span className="font-semibold">{h.host}</span>
@@ -155,7 +205,7 @@ export default function Frontends() {
 
       <div className="mt-8 grid grid-cols-1 2xl:grid-cols-2 gap-6">
         <section className="animate-rise" style={{ animationDelay: '90ms' }}>
-          <SectionTitle title="Pages deployments" subtitle="Latest production deploy of each Cloudflare Pages project" />
+          <SectionTitle title="Pages deployments" subtitle="Latest production deploy of each Cloudflare Pages project" right={cfOff ? null : <ExportButton name="pages-deployments" title="Pages deployments" columns={PAGES_COLUMNS} rows={cf.pages || []} />} />
           {cfOff ? (
             <ConnectCard title="Connect Cloudflare" message="Deploy status needs the Cloudflare Pages: Read permission and your account ID." />
           ) : (
@@ -195,7 +245,7 @@ export default function Frontends() {
         </section>
 
         <section className="animate-rise" style={{ animationDelay: '120ms' }}>
-          <SectionTitle title="Sentry" subtitle="Unresolved issues seen in the last 24 hours, per app" right={projects.length ? <button type="button" className="text-callout text-accent" onClick={() => navigate({ to: 'errors', filter: { source: 'frontend' } })}>Open in Errors</button> : null} />
+          <SectionTitle title="Sentry" subtitle="Unresolved issues seen in the last 24 hours, per app" right={<>{projects.length ? <button type="button" className="text-callout text-accent" onClick={() => navigate({ to: 'errors', filter: { source: 'frontend' } })}>Open in Errors</button> : null}<ExportButton name="sentry-apps" title="Sentry per app" columns={SENTRY_COLUMNS} rows={projects} /></>} />
           {!sentry || sentry.status === 'off' ? (
             <ConnectCard title="Connect Sentry" message="Frontend errors from the React apps, with alerts for new issues." />
           ) : (

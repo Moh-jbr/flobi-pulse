@@ -41,6 +41,7 @@ export const DEFAULT_SETTINGS = {
     critical: true,
     warning: true,
     info: false,
+    releases: true, // a new version of one of the team's repos (the Versions page)
     sound: true, // chime for warnings, siren for critical alerts
     volume: 0.8, // 0–1
     alarmRepeat: true, // critical siren repeats until acknowledged
@@ -90,7 +91,7 @@ export class JsonStore {
 }
 
 /**
- * Secrets: service-account key, Sentry/Cloudflare tokens.
+ * Secrets: service-account keys, Sentry/Cloudflare/GitHub tokens.
  * Encrypted with the OS keychain (Keychain on macOS, DPAPI on Windows).
  */
 export class SecureStore {
@@ -160,5 +161,12 @@ export function effectiveConfig(team, settings, secrets) {
     // Cloud SQL instances to watch, as "project:region:instance" (only needed when
     // the database is in another project and no pod names it in its settings).
     cloudsql: { instances: [...new Set([...(t.cloudsql?.instances || []), ...(o.cloudsql?.instances || [])])] },
+    versions: versionsConfig(t.versions?.manifest, secrets?.githubToken),
   };
+}
+
+/** The Versions page: the release manifest ("owner/repo/path.json") plus this person's own GitHub token. */
+function versionsConfig(manifest, token) {
+  const m = /^([A-Za-z0-9-]+)\/([A-Za-z0-9._-]+)\/([A-Za-z0-9._/-]+)$/.exec(manifest || '');
+  return m ? { owner: m[1], manifestRepo: m[2], manifestPath: m[3], token: token || '' } : null;
 }

@@ -188,6 +188,26 @@ export function Empty({ icon = 'check', title, message, action, tone = 'green', 
   );
 }
 
+/**
+ * An alert in words: what's wrong, the evidence, who's affected and what to do.
+ * `compact` (toasts, the alerts popover) drops the impact and clamps long lines.
+ */
+export function AlertText({ a, compact }) {
+  return (
+    <>
+      <div className="text-headline font-semibold break-words">{a.title}</div>
+      {a.detail && <div className={cx('text-callout text-label-2 mt-0.5 break-words', compact && 'line-clamp-2')}>{a.detail}</div>}
+      {!compact && a.impact && <div className="text-callout text-label-2 mt-1 break-words">{a.impact}</div>}
+      {a.action && (
+        <div className={cx('mt-1.5 text-callout text-label break-words', compact && 'line-clamp-3')}>
+          <span className="font-semibold">What to do: </span>
+          {a.action}
+        </div>
+      )}
+    </>
+  );
+}
+
 export function Kbd({ children }) {
   return <kbd className="inline-flex items-center h-[18px] px-1.5 rounded-[5px] bg-fill-3 text-footnote font-medium text-label-2 font-sans">{children}</kbd>;
 }

@@ -19,6 +19,17 @@ import { buildRecap } from './recap.mjs';
 const MIN = 60_000;
 const iso = (ms) => new Date(ms).toISOString();
 
+/**
+ * Cloud Logging filter for one workload's container logs: its pods by name (so pods
+ * that have since been replaced still match) or a container named like it. Pods of a
+ * Deployment are "<name>-<hash>-<hash>", of a StatefulSet "<name>-<n>".
+ */
+export function serviceFilter(name) {
+  const n = String(name).replace(/[^a-z0-9.-]/gi, '');
+  const re = n.replace(/\./g, '\\\\.');
+  return `(resource.labels.container_name="${n}" OR resource.labels.pod_name=~"^${re}-([a-z0-9]{5,10}-[a-z0-9]{5}|[a-z0-9]{5}|[0-9]+)$")`;
+}
+
 function friendlyK8sError(e, endpoint) {
   if (e.status === 401) return 'The cluster turned the service account away (HTTP 401), although Google accepted the key. Check that it has the “Kubernetes Engine Viewer” role (SETUP.md, step 1).';
   if (e.status === 403) return "The service account can't read the cluster. It needs the “Kubernetes Engine Viewer” role (SETUP.md, step 1).";
@@ -595,16 +606,37 @@ export class LiveConnector {
   /** History search in Cloud Logging. */
   async queryLogs({ service, pod, level, text, from, until, limit = 500 }) {
     const parts = [`resource.type="k8s_container"`, `resource.labels.namespace_name="${this.ns}"`];
-    if (service) parts.push(`resource.labels.container_name="${service.replace(/"/g, '')}"`);
+    if (service) parts.push(serviceFilter(service));
     if (pod) parts.push(`resource.labels.pod_name="${pod.replace(/"/g, '')}"`);
     if (level === 'ERROR') parts.push('severity>=ERROR');
     if (level === 'WARN') parts.push('severity>=WARNING');
     if (text) parts.push(`SEARCH("${String(text).replace(/["\\]/g, ' ')}")`);
     if (from) parts.push(`timestamp>="${iso(from)}"`);
     if (until) parts.push(`timestamp<"${iso(until)}"`);
-    const entries = await this.logging.listAll({ filter: parts.join(' AND '), orderBy: 'timestamp desc', max: Math.min(limit, 2000) });
+    // Someone is looking at a spinner: this goes before background reads.
+    const entries = await this.logging.listAll({ filter: parts.join(' AND '), orderBy: 'timestamp desc', max: Math.min(limit, 2000), priority: 'interactive' });
     const ctx = this.normalizeCtx();
     return entries.map((e) => normalizeEntry(e, ctx)).filter((x) => x.kind === 'log').reverse();
+  }
+
+  /**
+   * The backend's log lines for one load-balancer request: exact when the request
+   * carries a trace ID the service also logged, otherwise the service's lines from
+   * the few seconds around it. `service` is the Kubernetes Service the load balancer
+   * named; its pods (and logs) go by the workload's name.
+   */
+  async requestLogs({ service, ts, trace }) {
+    const workload = this.pipeline.svcToWorkload?.get(service) || service;
+    const ctx = this.normalizeCtx();
+    const read = (filter, max) => this.logging.listAll({ filter, orderBy: 'timestamp asc', max, pageSize: max, priority: 'interactive' });
+    const base = [`resource.type="k8s_container"`, `resource.labels.namespace_name="${this.ns}"`];
+    if (trace && /^projects\/[a-z0-9-]+\/traces\/[a-f0-9]{16,32}$/i.test(trace)) {
+      const lines = (await read([...base, `trace="${trace}"`, `timestamp>="${iso(ts - 10 * MIN)}"`, `timestamp<="${iso(ts + 10 * MIN)}"`].join(' AND '), 200)).map((e) => normalizeEntry(e, ctx)).filter((x) => x.kind === 'log');
+      if (lines.length) return { match: 'trace', workload, lines };
+    }
+    if (!workload) return { match: 'none', workload, lines: [] };
+    const lines = (await read([...base, serviceFilter(workload), `timestamp>="${iso(ts - 5_000)}"`, `timestamp<="${iso(ts + 5_000)}"`].join(' AND '), 300)).map((e) => normalizeEntry(e, ctx)).filter((x) => x.kind === 'log');
+    return { match: 'time', workload, lines };
   }
 
   async recap({ since, until }) {

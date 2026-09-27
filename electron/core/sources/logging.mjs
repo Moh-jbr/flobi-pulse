@@ -11,51 +11,95 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export const TAIL_UNAVAILABLE_MESSAGE =
   'Google allows 10 live log streams per project, and all 10 are in use right now (other Flobi Pulse windows or someone streaming in Logs Explorer). Live Traffic will reconnect on its own as soon as one frees up.';
 
+export const RATE_LIMITED_MESSAGE =
+  'Google is limiting log reads for this project right now (every Flobi Pulse window on the team shares 60 reads a minute). Wait a minute, then try again.';
+
 export class LoggingClient {
-  constructor({ projectId, getToken, invalidateToken, minIntervalMs = 1500 }) {
+  constructor({ projectId, getToken, invalidateToken, minIntervalMs = 1500, request = json, retryMs = 4_000, backoffMs = 15_000 }) {
     this.projectId = projectId;
     this.getToken = getToken;
     this.invalidateToken = invalidateToken;
     this.minIntervalMs = minIntervalMs;
-    this.queue = Promise.resolve();
+    this.request = request;
+    this.retryMs = retryMs;
+    this.backoffMs = backoffMs;
     this.lastCall = 0;
+    // Two lanes: what someone clicked on goes before background work (recap,
+    // Postgres polling), so a search never waits behind a queue of reads.
+    this.lanes = { interactive: [], background: [] };
+    this.cooldownUntil = 0; // after a 429, background reads wait this out
+    this.busy = false;
   }
 
-  /** Serialised + spaced entries:list calls, with backoff on 429. */
-  list({ filter, orderBy = 'timestamp desc', pageSize = 1000, pageToken, project = this.projectId }) {
-    const run = async () => {
-      const wait = this.lastCall + this.minIntervalMs - Date.now();
-      if (wait > 0) await sleep(wait);
-      for (let attempt = 0; ; attempt++) {
+  /**
+   * One entries:list call, spaced out and rate-limit aware.
+   * priority 'interactive' (someone is waiting on screen) jumps the queue, retries a
+   * 429 once after a few seconds, then fails with a clear message. 'background'
+   * backs off 15/30/45 s without holding up the queue.
+   */
+  list({ filter, orderBy = 'timestamp desc', pageSize = 1000, pageToken, project = this.projectId, priority = 'background' }) {
+    const body = JSON.stringify({ resourceNames: [`projects/${project}`], filter, orderBy, pageSize, ...(pageToken ? { pageToken } : {}) });
+    return new Promise((resolve, reject) => {
+      this.lanes[priority === 'interactive' ? 'interactive' : 'background'].push({ body, priority, resolve, reject, tries: 0 });
+      this._pump();
+    });
+  }
+
+  async _pump() {
+    if (this.busy) return;
+    this.busy = true;
+    try {
+      for (;;) {
+        let task = this.lanes.interactive.shift();
+        if (!task && this.lanes.background.length) {
+          const wait = this.cooldownUntil - Date.now();
+          if (wait > 0) {
+            clearTimeout(this._wake);
+            this._wake = setTimeout(() => this._pump(), wait);
+            break;
+          }
+          task = this.lanes.background.shift();
+        }
+        if (!task) break;
+        const wait = this.lastCall + this.minIntervalMs - Date.now();
+        if (wait > 0) await sleep(wait);
         this.lastCall = Date.now();
         try {
-          return await json({
-            method: 'POST',
-            url: 'https://logging.googleapis.com/v2/entries:list',
-            headers: { authorization: `Bearer ${await this.getToken()}`, 'content-type': 'application/json' },
-            body: JSON.stringify({ resourceNames: [`projects/${project}`], filter, orderBy, pageSize, ...(pageToken ? { pageToken } : {}) }),
-            timeoutMs: 60_000,
-          });
+          task.resolve(await this._call(task.body));
         } catch (e) {
-          if (e.status === 429 && attempt < 3) {
-            await sleep(15_000 * (attempt + 1));
-            continue;
-          }
-          throw e;
+          task.tries++;
+          if (e.status === 429 && task.priority === 'interactive' && task.tries < 2) {
+            await sleep(this.retryMs);
+            this.lanes.interactive.unshift(task);
+          } else if (e.status === 429 && task.priority !== 'interactive' && task.tries <= 3) {
+            this.cooldownUntil = Date.now() + this.backoffMs * task.tries;
+            this.lanes.background.unshift(task);
+          } else if (e.status === 429) {
+            task.reject(Object.assign(new Error(RATE_LIMITED_MESSAGE), { status: 429 }));
+          } else task.reject(e);
         }
       }
-    };
-    const p = this.queue.then(run, run);
-    this.queue = p.catch(() => {});
-    return p;
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  async _call(body) {
+    return this.request({
+      method: 'POST',
+      url: 'https://logging.googleapis.com/v2/entries:list',
+      headers: { authorization: `Bearer ${await this.getToken()}`, 'content-type': 'application/json' },
+      body,
+      timeoutMs: 60_000,
+    });
   }
 
   /** Pages through results up to `max` entries. */
-  async listAll({ filter, orderBy = 'timestamp desc', max = 2000, pageSize = 1000, project }) {
+  async listAll({ filter, orderBy = 'timestamp desc', max = 2000, pageSize = 1000, project, priority }) {
     const out = [];
     let pageToken;
     do {
-      const res = await this.list({ filter, orderBy, pageSize: Math.min(pageSize, max - out.length), pageToken, project });
+      const res = await this.list({ filter, orderBy, pageSize: Math.min(pageSize, max - out.length), pageToken, project, priority });
       out.push(...(res?.entries || []));
       pageToken = res?.nextPageToken;
     } while (pageToken && out.length < max);

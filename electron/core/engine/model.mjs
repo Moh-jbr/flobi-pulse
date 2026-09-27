@@ -170,6 +170,20 @@ export function podState(status, pod, now = Date.now()) {
   return 'warn'; // NotReady, Unknown
 }
 
+// Helper containers that run next to the app and rarely log anything useful.
+const SIDECAR = /^(cloud-?sql-proxy|cloudsql|istio-proxy|linkerd-proxy|envoy|fluent-?bit|fluentd|otel|opentelemetry|vault-agent|datadog|consul|metrics-exporter)/i;
+
+/**
+ * The app's own container: the one named like its workload (flobi-brand or brand),
+ * else the first one in the pod spec that isn't a known sidecar. Container statuses
+ * come back sorted by name, so "the first container" would often be a sidecar.
+ */
+export function mainContainerName(specContainers, workload) {
+  const names = (specContainers || []).map((c) => c.name);
+  const short = String(workload || '').replace(/^flobi-/, '');
+  return names.find((n) => n === workload || n === short) || names.find((n) => !SIDECAR.test(n)) || names[0] || null;
+}
+
 export function summarizePod(pod, metrics, now = Date.now()) {
   const status = podStatus(pod, now);
   const state = podState(status, pod, now);
@@ -221,6 +235,7 @@ export function summarizePod(pod, metrics, now = Date.now()) {
     startedAt: t(pod.status?.startTime),
     message: pod.status?.message || containers.find((c) => c.message)?.message || null,
     containers,
+    mainContainer: mainContainerName(pod.spec?.containers, workloadOf(pod)),
     cpu: m ? sum('cpu') : null,
     mem: m ? sum('mem') : null,
     cpuRequest: sum('cpuRequest'),
@@ -356,7 +371,7 @@ export function buildModel(raw, { podMetrics = new Map(), nodeMetrics = new Map(
     const rollingOut = (d.metadata.generation && st.observedGeneration < d.metadata.generation) || (updated < desired && (st.replicas || 0) > 0 && (st.replicas || 0) !== updated);
     const memPcts = podList.map((p) => (p.mem != null && p.memLimit ? p.mem / p.memLimit : null)).filter((x) => x != null);
     const cpuPcts = podList.map((p) => (p.cpu != null && (p.cpuLimit || p.cpuRequest) ? p.cpu / (p.cpuLimit || p.cpuRequest) : null)).filter((x) => x != null);
-    const container = d.spec?.containers?.[0] || {};
+    const container = d.spec?.containers?.find((c) => c.name === mainContainerName(d.spec?.containers, name)) || {};
     let recentRestarts = 0;
     for (const p of podList) {
       for (const c of p.containers) {

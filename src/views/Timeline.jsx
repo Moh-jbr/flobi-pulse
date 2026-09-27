@@ -2,9 +2,10 @@ import { useEffect, useState } from 'react';
 import { useStore, invoke, navigate } from '../lib/store.js';
 import { ViewScroll } from '../components/Toolbar.jsx';
 import { Card, Segmented, Spinner, Empty, Button } from '../components/ui.jsx';
-import { SummaryChips, TimelineStrip, IncidentList, RecapExtras } from '../components/Recap.jsx';
+import { SummaryChips, TimelineStrip, IncidentList, RecapExtras, INCIDENT_COLUMNS } from '../components/Recap.jsx';
 import { dayTime, duration } from '../lib/format.js';
 import DateTimePicker from '../components/DateTimePicker.jsx';
+import ExportButton from '../components/ExportButton.jsx';
 
 const H = 3600_000;
 const PRESETS = [
@@ -77,8 +78,11 @@ export default function Timeline() {
           <Card className="flex flex-col gap-4">
             <div className="flex items-baseline justify-between gap-4 flex-wrap">
               <div className="text-title2 font-semibold">{recap.headline}</div>
-              <div className="text-callout text-label-2">
-                {dayTime(recap.since)} → {dayTime(recap.until)} · {duration(recap.until - recap.since)}
+              <div className="flex items-center gap-3">
+                <span className="text-callout text-label-2">
+                  {dayTime(recap.since)} → {dayTime(recap.until)} · {duration(recap.until - recap.since)}
+                </span>
+                <ExportButton name="timeline" title="Timeline" columns={INCIDENT_COLUMNS} rows={recap.incidents} />
               </div>
             </div>
             <SummaryChips summary={recap.summary} />

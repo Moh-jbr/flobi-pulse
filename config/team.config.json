@@ -21,6 +21,10 @@
     ],
     "token": ""
   },
+  "versions": {
+    "$comment": "The Versions page: the release manifest (every repo and its product, from flobi-release) and each repo's GitHub releases. Each person adds their own read-only GitHub token in Settings → Integrations; never put a token here.",
+    "manifest": "4ow4-Developers/flobi-release/repos.json"
+  },
   "uptime": [
     {
       "name": "API gateway",

@@ -6,7 +6,26 @@ import Select from '../components/Select.jsx';
 import { Card, Segmented, SearchField, StatusCode, Button, cx, Toggle, Spinner } from '../components/ui.jsx';
 import { StatusColumns, StatusLegend, LatencyBar } from '../components/charts.jsx';
 import Icon from '../components/icons.jsx';
+import ExportButton from '../components/ExportButton.jsx';
 import { clockMs, compact, pct, ms, bytes, uaShort, short } from '../lib/format.js';
+
+export const TRAFFIC_COLUMNS = [
+  { label: 'Time', get: (r) => new Date(r.ts) },
+  { label: 'Method', get: (r) => r.method },
+  { label: 'Status', get: (r) => r.status },
+  { label: 'Host', get: (r) => r.host },
+  { label: 'Path', get: (r) => r.path },
+  { label: 'Service', get: (r) => (r.service ? short(r.service) : '') },
+  { label: 'Latency (ms)', get: (r) => r.latencyMs },
+  { label: 'Response size (bytes)', get: (r) => r.respSize },
+  { label: 'Request size (bytes)', get: (r) => r.reqSize },
+  { label: 'Client', get: (r) => uaShort(r.ua) },
+  { label: 'IP', get: (r) => r.ip },
+  { label: 'User agent', get: (r) => r.ua },
+  { label: 'Referrer', get: (r) => r.referer },
+  { label: 'Load balancer status', get: (r) => r.statusDetails || '' },
+  { label: 'Trace', get: (r) => (r.trace ? r.trace.split('/').pop() : '') },
+];
 
 // Columns follow the table's own width (container queries): narrow windows keep
 // Time · Status · Path · Service · Latency, wider ones add Method, Host, Size, Client.
@@ -211,6 +230,7 @@ export default function Traffic() {
           >
             {paused?.by === 'user' ? 'Resume' : 'Pause'}
           </Button>
+          <ExportButton name="live-traffic" title="Live traffic" columns={TRAFFIC_COLUMNS} rows={items} />
         </div>
       </div>
 

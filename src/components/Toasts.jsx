@@ -1,6 +1,6 @@
 import { useStore, dismissToast, navigate, silenceAlarm } from '../lib/store.js';
 import Icon from './icons.jsx';
-import { cx } from './ui.jsx';
+import { cx, AlertText } from './ui.jsx';
 
 export default function Toasts() {
   const toasts = useStore((s) => s.toasts);
@@ -29,8 +29,7 @@ export default function Toasts() {
             <Icon name={t.severity === 'critical' ? 'bolt' : t.severity === 'warning' ? 'errors' : 'bell'} size={15} strokeWidth={2} className={t.severity === 'critical' ? 'text-red' : t.severity === 'warning' ? 'text-orange' : 'text-accent'} />
           </div>
           <button type="button" className="min-w-0 flex-1 text-left" onClick={() => (dismissToast(t.id), t.view && navigate(t.view))}>
-            <div className="text-headline font-semibold">{t.title}</div>
-            {t.detail && <div className="text-callout text-label-2 mt-0.5 line-clamp-2 break-words">{t.detail}</div>}
+            <AlertText a={t} compact />
           </button>
           <button type="button" onClick={() => dismissToast(t.id)} className="w-6 h-6 rounded-full hover:bg-fill-3 grid place-items-center text-label-3" aria-label="Dismiss">
             <Icon name="x" size={11} strokeWidth={2.4} />

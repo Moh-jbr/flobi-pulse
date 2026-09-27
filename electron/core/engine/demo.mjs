@@ -695,6 +695,19 @@ export class DemoConnector {
     return list.slice(-limit);
   }
 
+  /** Demo: the service's lines around a request, with the error behind a failed one. */
+  async requestLogs({ service, ts, status, method = 'GET', path = '/' }) {
+    await new Promise((r) => setTimeout(r, 600));
+    const workload = this.deployments.find((d) => d.metadata.name === service || d.metadata.name === `flobi-${service}`)?.metadata.name || service;
+    const lines = this.recentLogs.filter((l) => l.service === workload && Math.abs(l.ts - ts) <= 5_000);
+    if (status >= 500) {
+      const pod = this.pods.find((p) => p.metadata.labels.app === workload)?.metadata.name || `${workload}-7d9f8c6b5-x2x9z`;
+      const text = status === 504 ? `ERROR [RequestTimeout] ${method} ${path.split('?')[0]} took longer than 30000ms, gave up` : `ERROR [ExceptionsHandler] ${method} ${path.split('?')[0]} failed: connect ECONNREFUSED 10.8.3.14:5432`;
+      lines.push({ kind: 'log', id: `demo-req-${ts}`, ts: ts - 40, pod, container: workload, service: workload, level: 'ERROR', severity: 'ERROR', text, json: null, trace: null, source: 'cloud' });
+    }
+    return { match: 'time', workload, lines: lines.sort((a, b) => a.ts - b.ts) };
+  }
+
   async usage({ service, range = HOUR }) {
     const now = this.clock();
     const d = this.deployments.find((x) => x.metadata.name === service);

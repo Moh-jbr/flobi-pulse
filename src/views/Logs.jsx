@@ -3,8 +3,9 @@ import { useStore, logs as globalRing, received, invoke, onFollow, inspect } fro
 import { ViewFixed } from '../components/Toolbar.jsx';
 import VirtualList from '../components/VirtualList.jsx';
 import Select from '../components/Select.jsx';
-import { Segmented, SearchField, Button, cx, Spinner, Card } from '../components/ui.jsx';
+import { Segmented, SearchField, Button, cx, Spinner, Card, useNow } from '../components/ui.jsx';
 import Icon from '../components/icons.jsx';
+import ExportButton from '../components/ExportButton.jsx';
 import { LiveUnavailable, NewCount } from './Traffic.jsx';
 import { clockMs, short, compact, dayTime } from '../lib/format.js';
 import { parseNest } from '../../electron/core/engine/log-parse.mjs';
@@ -17,6 +18,30 @@ const LEVEL = {
   DEBUG: { label: 'DBG', cls: 'bg-fill-4 text-label-3' },
 };
 const LEVEL_RANK = { ERROR: 3, WARN: 2, INFO: 1, DEBUG: 0 };
+const LOG_COLUMNS = [
+  { label: 'Time', get: (l) => new Date(l.ts) },
+  { label: 'Level', get: (l) => l.level },
+  { label: 'Service', get: (l) => short(l.service) },
+  { label: 'Pod', get: (l) => l.pod },
+  { label: 'Message', get: (l) => l.text },
+];
+const cleanError = (e) => String(e?.message || e).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+
+/**
+ * "Searching… 12 s" with a hint once it takes a while, so a wait never looks stuck.
+ * Every wait has an end: after `giveUpAfter` seconds it shows `giveUp` instead.
+ */
+function Waiting({ what, since, onCancel, giveUpAfter, giveUp }) {
+  const now = useNow(1000);
+  const secs = Math.max(0, Math.round((now - since) / 1000));
+  if (giveUpAfter && secs >= giveUpAfter) return giveUp;
+  return (
+    <EmptyNote spinner action={onCancel ? ['Cancel', onCancel] : null}>
+      {what} {secs >= 2 ? `${secs} s` : ''}
+      {secs >= 8 && <span className="block mt-1 text-label-3">Cloud Logging can be slow on busy days, and the team's windows share its read limit. It gives up with a clear message after about a minute.</span>}
+    </EmptyNote>
+  );
+}
 
 function useServiceFollow(scope, pods) {
   const ring = useRef([]);
@@ -24,10 +49,12 @@ function useServiceFollow(scope, pods) {
   const [status, setStatus] = useState({}); // pod -> { state: 'opening'|'streaming'|'error'|'stopped', message }
   const subs = useRef(new Map()); // pod -> {id, off}
   const scheduled = useRef(false);
+  const startedAt = useRef(Date.now());
   const setPod = (pod, st) => setStatus((s) => ({ ...s, [pod]: st }));
 
   useEffect(() => {
     ring.current = [];
+    startedAt.current = Date.now();
     setStatus({});
     setVersion((v) => v + 1);
     return () => {
@@ -44,7 +71,7 @@ function useServiceFollow(scope, pods) {
     const wanted = scope.kind === 'pod' ? pods.filter((p) => p.name === scope.pod) : pods.filter((p) => p.service === scope.service && p.state !== 'done');
     for (const p of wanted) {
       if (subs.current.has(p.name)) continue;
-      const container = p.containers?.[0]?.name || p.service;
+      const container = p.mainContainer || p.containers?.[0]?.name || p.service;
       const entry = { id: null, off: null };
       subs.current.set(p.name, entry);
       setPod(p.name, { state: 'opening' });
@@ -84,9 +111,22 @@ function useServiceFollow(scope, pods) {
   }, [scope, pods]);
 
   const wanted = !scope || scope.kind === 'all' ? [] : scope.kind === 'pod' ? pods.filter((p) => p.name === scope.pod) : pods.filter((p) => p.service === scope.service && p.state !== 'done');
-  // Pod logs not allowed for this key → the view switches to Cloud Logging.
-  const forbidden = Object.values(status).some((s) => s.state === 'forbidden');
-  return { ring: ring.current, version, status, podCount: wanted.length, forbidden };
+  const states = Object.values(status).map((st) => st.state);
+  const count = (...xs) => states.filter((x) => xs.includes(x)).length;
+  return {
+    ring: ring.current,
+    version,
+    status,
+    podCount: wanted.length,
+    since: startedAt.current,
+    container: wanted[0]?.mainContainer || wanted[0]?.containers?.[0]?.name || null,
+    streaming: count('streaming'),
+    opening: count('opening'),
+    // Pod logs not allowed for this key → the view switches to Cloud Logging.
+    forbidden: count('forbidden') > 0,
+    // Every stream failed, stopped or never answered → Cloud Logging too.
+    allFailed: states.length > 0 && count('error', 'stopped', 'unreachable') === states.length,
+  };
 }
 
 export default function Logs() {
@@ -100,7 +140,8 @@ export default function Logs() {
   const [q, setQ] = useState('');
   const [follow, setFollow] = useState(true);
   const [paused, setPaused] = useState(null); // { rows, by: 'user'|'scroll', at }
-  const [history, setHistory] = useState(null); // { loading, items, range, error }
+  const [history, setHistory] = useState(null); // { loading, items, range, error, since, args }
+  const historyRun = useRef(0);
 
   // Deep links (from the recap, alerts, error groups)
   useEffect(() => {
@@ -114,15 +155,21 @@ export default function Logs() {
   const podList = useMemo(() => pods.filter((p) => p.state !== 'done'), [pods.length, pods.map((p) => p.name).join()]);
   const follow$ = useServiceFollow(scope.kind === 'all' ? null : scope, podList);
 
-  async function runHistory({ from, until, service, level: lv, text }) {
-    setHistory({ loading: true, items: [], range: { from, until } });
+  async function runHistory(args) {
+    const { from, until, service, level: lv, text } = args;
+    const run = ++historyRun.current;
+    setHistory({ loading: true, items: [], range: { from, until }, since: Date.now(), args });
     try {
       const items = await invoke('logs:query', { from, until, service: service ?? (scope.kind !== 'all' ? scope.service : undefined), pod: scope.kind === 'pod' ? scope.pod : undefined, level: (lv ?? level) === 'all' ? undefined : lv ?? level, text: text ?? (q || undefined), limit: 2000 });
-      setHistory({ loading: false, items, range: { from, until } });
+      if (run === historyRun.current) setHistory({ loading: false, items, range: { from, until }, args });
     } catch (e) {
-      setHistory({ loading: false, items: [], range: { from, until }, error: e.message });
+      if (run === historyRun.current) setHistory({ loading: false, items: [], range: { from, until }, error: cleanError(e), args });
     }
   }
+  const cancelHistory = () => {
+    historyRun.current++;
+    setHistory(null);
+  };
 
   const podIndex = useMemo(() => {
     const m = new Map();
@@ -136,24 +183,29 @@ export default function Logs() {
     return m;
   }, [pods]);
 
-  // Fallback when this key can't read pod logs: the last 15 minutes from Cloud
-  // Logging, then this service's lines from the live stream (a few seconds behind).
-  const cloudMode = scope.kind !== 'all' && follow$.forbidden;
+  // Fallback to Cloud Logging (the last 15 minutes, then this service's lines from the
+  // live stream, a few seconds behind) when this key can't read pod logs, when every
+  // pod stream failed or never answered, or when asked to.
+  const [forceCloud, setForceCloud] = useState(false);
+  useEffect(() => setForceCloud(false), [scope.kind, scope.service, scope.pod]);
+  const cloudReason = scope.kind === 'all' ? null : follow$.forbidden ? 'forbidden' : follow$.allFailed ? 'failed' : forceCloud ? 'asked' : null;
+  const cloudMode = !!cloudReason;
   const [cloudInit, setCloudInit] = useState(null);
+  const [cloudTry, setCloudTry] = useState(0);
   useEffect(() => {
     if (!cloudMode) {
       setCloudInit(null);
       return;
     }
     let alive = true;
-    setCloudInit({ loading: true, items: [] });
+    setCloudInit({ loading: true, items: [], since: Date.now() });
     invoke('logs:query', { service: scope.service, pod: scope.kind === 'pod' ? scope.pod : undefined, from: Date.now() - 15 * 60_000, until: Date.now(), limit: 1000 })
       .then((items) => alive && setCloudInit({ loading: false, items }))
-      .catch((e) => alive && setCloudInit({ loading: false, items: [], error: String(e.message || e).replace(/^Error invoking remote method '[^']+': (Error: )?/, '') }));
+      .catch((e) => alive && setCloudInit({ loading: false, items: [], error: cleanError(e) }));
     return () => {
       alive = false;
     };
-  }, [cloudMode, scope.kind, scope.service, scope.pod]);
+  }, [cloudMode, scope.kind, scope.service, scope.pod, cloudTry]);
   const cloudRing = useMemo(() => {
     if (!cloudMode) return null;
     const seen = new Set();
@@ -167,9 +219,41 @@ export default function Logs() {
     return out.sort((a, b) => a.ts - b.ts);
   }, [cloudMode, cloudInit, paused ? 0 : globalVersion, scope]);
 
-  const liveSource = scope.kind === 'all' ? globalRing : cloudRing || follow$.ring;
+  const [quiet, setQuiet] = useState(null); // { loading, items, error, since }
+  const [quietTry, setQuietTry] = useState(0);
+  const silent = scope.kind !== 'all' && !cloudMode && !history && follow$.podCount > 0 && follow$.streaming > 0 && follow$.ring.length === 0;
+  // Only a new scope (or a retry) cancels a running check; its own state changes never do.
+  const quietRun = useRef(0);
+  useEffect(() => {
+    quietRun.current++;
+    setQuiet(null);
+  }, [scope.kind, scope.service, scope.pod]);
+  useEffect(() => {
+    if (!silent || quiet) return;
+    const t = setTimeout(
+      () => {
+        const run = ++quietRun.current;
+        setQuiet({ loading: true, items: [], since: Date.now() });
+        invoke('logs:query', { service: scope.service, pod: scope.kind === 'pod' ? scope.pod : undefined, from: Date.now() - 15 * 60_000, until: Date.now(), limit: 1000 })
+          .then((items) => run === quietRun.current && setQuiet({ loading: false, items }))
+          .catch((e) => run === quietRun.current && setQuiet({ loading: false, items: [], error: cleanError(e) }));
+      },
+      quietTry ? 0 : 6_000,
+    );
+    return () => clearTimeout(t);
+  }, [silent, quiet, quietTry, scope.service, scope.pod]);
+  // Earlier lines from that check stay above whatever the pods stream afterwards.
+  const followSource = useMemo(() => {
+    const extra = quiet?.items || [];
+    if (!extra.length) return follow$.ring;
+    const firstLive = follow$.ring[0]?.ts ?? Infinity;
+    return [...extra.filter((l) => l.ts < firstLive), ...follow$.ring];
+  }, [follow$.version, quiet]);
+  const [allSince] = useState(() => Date.now());
+
+  const liveSource = scope.kind === 'all' ? globalRing : cloudRing || followSource;
   const source = history ? history.items : paused ? paused.rows : liveSource;
-  const version = history ? history.items.length : paused ? 0 : scope.kind === 'all' || cloudMode ? globalVersion : follow$.version;
+  const version = history ? history.items.length : paused ? 0 : scope.kind === 'all' || cloudMode ? globalVersion : follow$.version + (quiet?.items?.length || 0);
   // The exact lines on screen right now, so freezing never shifts them.
   const onScreen = useRef({ rows: [], at: 0 });
   const freeze = (by) => setPaused({ rows: onScreen.current.rows, by, at: onScreen.current.at });
@@ -215,20 +299,33 @@ export default function Logs() {
     setLevel('all');
     setQ('');
   };
-  const streamErrors = cloudMode ? [] : Object.values(follow$.status).filter((s) => s.state === 'error');
+  const svc = short(scope.service);
+  const pods$ = `${follow$.podCount} pod${follow$.podCount === 1 ? '' : 's'}`;
+  const toCloud = ['Use Cloud Logging instead', () => setForceCloud(true)];
+  const last24h = ['Search the last 24 hours', () => runHistory({ from: Date.now() - 24 * 3600_000, until: Date.now() })];
+  const cloudWhy = { forbidden: `This key can't read ${svc}'s pods directly`, failed: `${svc}'s pods aren't sending their logs right now (${Object.values(follow$.status).find((st) => st.message)?.message || 'the stream failed'})`, asked: 'Reading Cloud Logging' }[cloudReason];
 
   let emptyState;
-  if (history?.loading) emptyState = <EmptyNote spinner>Searching Cloud Logging…</EmptyNote>;
-  else if (history?.error) emptyState = <EmptyNote tone="red">{history.error}</EmptyNote>;
+  if (history?.loading) emptyState = <Waiting what="Searching Cloud Logging…" since={history.since} onCancel={cancelHistory} />;
+  else if (history?.error) emptyState = <EmptyNote tone="red" action={['Try again', () => runHistory(history.args)]}>{history.error}</EmptyNote>;
   else if (history) emptyState = <EmptyNote action={filtering ? ['Clear filters', clearFilters] : null}>Nothing found between {dayTime(history.range.from)} and {dayTime(history.range.until)}{filtering ? ' with these filters' : ''}.</EmptyNote>;
   else if (source.length && filtering) emptyState = <EmptyNote action={['Clear filters', clearFilters]}>No lines match {level !== 'all' ? `“${level === 'ERROR' ? 'Errors' : level === 'WARN' ? 'Warnings+' : 'Info+'}”` : ''}{level !== 'all' && q.trim() ? ' and ' : ''}{q.trim() ? `“${q.trim()}”` : ''} in the {compact(source.length)} lines so far. New lines appear here as they come in.</EmptyNote>;
-  else if (scope.kind === 'all') emptyState = live?.status !== 'streaming' ? <EmptyNote>Live logs are not streaming. Pick a service above to read its pods directly from Kubernetes.</EmptyNote> : <EmptyNote spinner>Waiting for log lines…</EmptyNote>;
-  else if (cloudMode && cloudInit?.loading) emptyState = <EmptyNote spinner>Loading the last 15 minutes from Cloud Logging…</EmptyNote>;
-  else if (cloudMode && cloudInit?.error) emptyState = <EmptyNote tone="red">{cloudInit.error}</EmptyNote>;
-  else if (cloudMode) emptyState = <EmptyNote>No lines from {short(scope.service)} in the last 15 minutes. New ones appear here as they come in.</EmptyNote>;
-  else if (!follow$.podCount) emptyState = <EmptyNote>{short(scope.service)} has no running pods right now, so there's nothing to stream. Use “Search history…” to read its older logs.</EmptyNote>;
-  else if (streamErrors.length) emptyState = <EmptyNote tone="red">Couldn't open the log stream: {streamErrors[0].message || 'unknown error'}. Retrying…</EmptyNote>;
-  else emptyState = <EmptyNote spinner>Connected to {follow$.podCount} pod{follow$.podCount === 1 ? '' : 's'}. Waiting for new lines…</EmptyNote>;
+  else if (scope.kind === 'all')
+    emptyState =
+      live?.status !== 'streaming' ? (
+        <EmptyNote>Live logs are not streaming. Pick a service above to read its pods directly from Kubernetes.</EmptyNote>
+      ) : (
+        <Waiting what="Waiting for log lines…" since={allSince} giveUpAfter={20} giveUp={<EmptyNote>The live stream is connected, but no service has logged anything in the last 20 seconds. Pick a service above to read its pods directly, or check Settings → Data sources.</EmptyNote>} />
+      );
+  else if (cloudMode && cloudInit?.loading) emptyState = <Waiting what={`${cloudWhy}, so loading its last 15 minutes from Cloud Logging…`} since={cloudInit.since} />;
+  else if (cloudMode && cloudInit?.error) emptyState = <EmptyNote tone="red" action={['Try again', () => setCloudTry((n) => n + 1)]}>{cloudInit.error}</EmptyNote>;
+  else if (cloudMode) emptyState = <EmptyNote action={last24h}>{cloudWhy}. Cloud Logging has nothing from {svc} in the last 15 minutes either. New lines appear here as they come in.</EmptyNote>;
+  else if (!follow$.podCount) emptyState = <EmptyNote action={last24h}>{svc} has no running pods right now, so there's nothing to stream.</EmptyNote>;
+  else if (!follow$.streaming) emptyState = <Waiting what={`Opening the log stream of ${pods$}…`} since={follow$.since} giveUpAfter={25} giveUp={<EmptyNote tone="red" action={toCloud}>Kubernetes hasn't answered for {svc}'s pod logs in 25 seconds. It keeps trying in the background.</EmptyNote>} />;
+  else if (!quiet) emptyState = <Waiting what={`Connected to ${pods$}, reading their recent output…`} since={follow$.since} />;
+  else if (quiet.loading) emptyState = <Waiting what={`${svc}'s pods are connected but haven't sent anything, so checking Cloud Logging for its last 15 minutes…`} since={quiet.since} />;
+  else if (quiet.error) emptyState = <EmptyNote tone="red" action={['Try again', () => (setQuiet(null), setQuietTry((n) => n + 1))]}>{svc}'s pods are connected but silent, and Cloud Logging couldn't be checked: {quiet.error}</EmptyNote>;
+  else emptyState = <EmptyNote action={last24h}>{svc} hasn't written a single log line in the last 15 minutes: nothing from its pods directly, nothing in Cloud Logging. New lines show up here the moment it writes one.</EmptyNote>;
 
   return (
     <ViewFixed>
@@ -242,7 +339,7 @@ export default function Logs() {
           searchable
           value={scope.kind === 'all' ? '__all' : scope.kind === 'pod' ? `pod:${scope.pod}` : scope.service}
           onChange={(v) => {
-            setHistory(null);
+            cancelHistory();
             setPaused(null);
             setFollow(true);
             if (v === '__all') setScope({ kind: 'all' });
@@ -285,7 +382,7 @@ export default function Logs() {
           <span className="text-subheadline text-label-3 tabular">{compact(items.length)} lines</span>
           <SearchField value={q} onChange={setQ} placeholder="Search, or /regex/" width={240} />
           {history ? (
-            <Button size="sm" variant="tinted" icon="play" onClick={() => setHistory(null)}>
+            <Button size="sm" variant="tinted" icon="play" onClick={cancelHistory}>
               Back to live
             </Button>
           ) : (
@@ -310,6 +407,7 @@ export default function Logs() {
               </Button>
             </>
           )}
+          <ExportButton name={scope.kind === 'all' ? 'logs' : `logs-${short(scope.service)}`} title="Logs" columns={LOG_COLUMNS} rows={items} />
         </div>
       </div>
 
@@ -359,14 +457,23 @@ export default function Logs() {
         <div className="px-6 -mt-2 mb-3 text-subheadline text-label-3">
           {cloudMode ? (
             <>
-              Reading {scope.kind === 'pod' ? scope.pod : scope.service} from Cloud Logging, a few seconds behind. This key isn’t allowed to read pod logs directly; SETUP.md step 1 shows the one-line fix.
+              Reading {scope.kind === 'pod' ? scope.pod : scope.service} from Cloud Logging, a few seconds behind.{' '}
+              {cloudReason === 'forbidden' ? 'This key isn’t allowed to read pod logs directly; SETUP.md step 1 shows the one-line fix.' : cloudReason === 'failed' ? 'Its pods aren’t sending their logs directly right now.' : null}
+              {cloudReason === 'asked' && (
+                <button type="button" className="text-accent ml-1" onClick={() => setForceCloud(false)}>
+                  Try the pods directly again
+                </button>
+              )}
             </>
           ) : (
             <>
-              Reading {scope.kind === 'pod' ? scope.pod : `${follow$.podCount} pod${follow$.podCount === 1 ? '' : 's'} of ${scope.service}`} straight from the Kubernetes API — same as <span className="font-mono">kubectl logs -f</span>, no delay.
+              Reading the <span className="font-mono">{follow$.container || 'main'}</span> container of {scope.kind === 'pod' ? scope.pod : `${follow$.podCount} pod${follow$.podCount === 1 ? '' : 's'} of ${scope.service}`} straight from the Kubernetes API, same as <span className="font-mono">kubectl logs -f</span>, no delay.
+              {quiet?.items?.length > 0 && follow$.ring.length === 0 && ' The pods are connected but quiet, so the lines above are its last 15 minutes from Cloud Logging.'}
             </>
           )}
-          {streamErrors.length > 0 && items.length > 0 && <span className="text-red"> {streamErrors.length} stream{streamErrors.length > 1 ? 's' : ''} failed: {streamErrors[0].message}</span>}
+          {!cloudMode && follow$.streaming > 0 && follow$.streaming < follow$.podCount && (
+            <span className="text-orange"> {follow$.podCount - follow$.streaming} of {follow$.podCount} pod streams aren't connected yet or failed; showing the rest.</span>
+          )}
         </div>
       )}
     </ViewFixed>

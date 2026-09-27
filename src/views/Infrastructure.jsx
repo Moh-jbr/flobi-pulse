@@ -4,6 +4,76 @@ import { Card, SectionTitle, Meter, Pill, StatusDot, cx, useNow, Empty, HealthPi
 import { Sparkline } from '../components/charts.jsx';
 import Icon from '../components/icons.jsx';
 import { pct, bytes, cores, ago, short, dayTime, ms, compact, duration } from '../lib/format.js';
+import ExportButton from '../components/ExportButton.jsx';
+
+const pctNum = (v) => (v == null ? '' : Math.round(v * 1000) / 10);
+const NODE_COLUMNS = [
+  { label: 'Node', get: (n) => n.name },
+  { label: 'Pool', get: (n) => n.pool },
+  { label: 'Machine', get: (n) => n.machine },
+  { label: 'Zone', get: (n) => n.zone },
+  { label: 'Spot', get: (n) => (n.spot ? 'yes' : '') },
+  { label: 'CPU %', get: (n) => pctNum(n.cpuPct) },
+  { label: 'CPU used (cores)', get: (n) => (n.cpu != null ? Math.round(n.cpu) / 1000 : '') },
+  { label: 'CPU allocatable (cores)', get: (n) => (n.cpuAlloc != null ? Math.round(n.cpuAlloc) / 1000 : '') },
+  { label: 'Memory %', get: (n) => pctNum(n.memPct) },
+  { label: 'Memory used (GB)', get: (n) => (n.mem != null ? Math.round(n.mem / 1e7) / 100 : '') },
+  { label: 'Memory allocatable (GB)', get: (n) => (n.memAlloc != null ? Math.round(n.memAlloc / 1e7) / 100 : '') },
+  { label: 'Pods', get: (n) => n.pods },
+  { label: 'Created', get: (n) => (n.createdAt ? new Date(n.createdAt) : '') },
+  { label: 'Message', get: (n) => n.message || '' },
+];
+const SCALING_COLUMNS = [
+  { label: 'Service', get: (s) => s.short },
+  { label: 'Type', get: (s) => s.kind },
+  { label: 'Replicas now', get: (s) => s.current ?? '' },
+  { label: 'Min', get: (s) => s.min },
+  { label: 'Max', get: (s) => s.max },
+  { label: 'At max', get: (s) => (s.atMax ? 'yes' : '') },
+  { label: 'CPU %', get: (s) => s.cpuNow ?? '' },
+  { label: 'CPU target %', get: (s) => s.cpuTarget ?? '' },
+  { label: 'Memory %', get: (s) => s.memNow ?? '' },
+  { label: 'Memory target %', get: (s) => s.memTarget ?? '' },
+  { label: 'Triggers', get: (s) => (s.triggers || []).join(', ') },
+  { label: 'Last change', get: (s) => (s.lastScaleAt ? new Date(s.lastScaleAt) : '') },
+];
+const INFRA_COLUMNS = [
+  { label: 'Name', get: (s) => s.name },
+  { label: 'Health', get: (s) => s.health },
+  { label: 'Memory %', get: (s) => pctNum(s.memPct) },
+  { label: 'Memory limit', get: (s) => s.memLimit || '' },
+  { label: 'Restarts', get: (s) => s.restarts },
+];
+const CRON_COLUMNS = [
+  { label: 'Job', get: (c) => c.name },
+  { label: 'Schedule', get: (c) => c.schedule },
+  { label: 'Status', get: (c) => (c.active ? 'Running' : c.lastStatus === 'failed' ? 'Failed' : c.suspended ? 'Suspended' : 'OK') },
+  { label: 'Last run', get: (c) => (c.lastScheduleAt ? new Date(c.lastScheduleAt) : '') },
+  { label: 'Last success', get: (c) => (c.lastSuccessAt ? new Date(c.lastSuccessAt) : '') },
+  { label: 'Last message', get: (c) => c.lastMessage || '' },
+];
+const CERT_COLUMNS = [
+  { label: 'Certificate', get: (c) => c.name },
+  { label: 'Status', get: (c) => (c.harmless ? `Not in use (${c.status})` : c.status) },
+  { label: 'Domains', get: (c) => c.domains.map((d) => `${d.domain} (${d.status})`).join(', ') },
+  { label: 'Renews before', get: (c) => (c.expiresAt ? new Date(c.expiresAt) : '') },
+  { label: 'Note', get: (c) => c.reason || '' },
+];
+const RUN_COLUMNS = [
+  { label: 'Service', get: (r) => r.name },
+  { label: 'Ready', get: (r) => (r.ready ? 'yes' : 'no') },
+  { label: 'Revision', get: (r) => r.revision || '' },
+  { label: 'Requests / min', get: (r) => r.rpm ?? '' },
+  { label: '5xx %', get: (r) => (r.errRate != null ? Math.round(r.errRate * 1000) / 10 : '') },
+  { label: 'p95 (ms)', get: (r) => r.p95 ?? '' },
+  { label: 'Reason', get: (r) => r.reason || '' },
+];
+const ROUTE_COLUMNS = [
+  { label: 'Host', get: (r) => r.host },
+  { label: 'Path', get: (r) => r.path },
+  { label: 'Service', get: (r) => short(r.workload || r.service) },
+  { label: 'Kubernetes Service', get: (r) => r.service || '' },
+];
 
 function ReplicaBar({ min, max, current }) {
   const span = Math.max(1, max);
@@ -64,7 +134,7 @@ export default function Infrastructure() {
       </Card>
 
       <section className="mt-6 animate-rise" style={{ animationDelay: '40ms' }}>
-        <SectionTitle title="Nodes" subtitle="Live usage from metrics-server, against what the node can allocate" />
+        <SectionTitle title="Nodes" subtitle="Live usage from metrics-server, against what the node can allocate" right={<ExportButton name="nodes" title="Nodes" columns={NODE_COLUMNS} rows={nodes} />} />
         <div className="grid grid-cols-[repeat(auto-fill,minmax(270px,1fr))] gap-3">
           {nodes.map((n) => (
             <Card key={n.name} className={cx('flex flex-col gap-3', n.state === 'bad' && 'shadow-[0_0_0_1.5px_var(--red),var(--shadow-card)]')}>
@@ -108,7 +178,7 @@ export default function Infrastructure() {
       </section>
 
       <section className="mt-8 animate-rise" style={{ animationDelay: '80ms' }}>
-        <SectionTitle title="Autoscaling" subtitle="HPAs and KEDA scalers — current replicas between min and max" />
+        <SectionTitle title="Autoscaling" subtitle="HPAs and KEDA scalers — current replicas between min and max" right={<ExportButton name="autoscaling" title="Autoscaling" columns={SCALING_COLUMNS} rows={scaling} />} />
         <Card pad={false} className="@container overflow-hidden">
           <div className="grid grid-cols-[minmax(110px,1fr)_minmax(120px,1.3fr)_84px_110px] @5xl:grid-cols-[180px_70px_minmax(160px,1fr)_90px_120px_120px_110px] gap-4 px-4 h-8 items-center text-subheadline font-semibold text-label-2 hairline-b">
             <span>Service</span>
@@ -141,7 +211,7 @@ export default function Infrastructure() {
 
       <div className="mt-8 grid grid-cols-1 2xl:grid-cols-2 gap-6">
         <section className="animate-rise" style={{ animationDelay: '100ms' }}>
-          <SectionTitle title="Message queue & cache" subtitle="RabbitMQ and Redis containers" />
+          <SectionTitle title="Message queue & cache" subtitle="RabbitMQ and Redis containers" right={<ExportButton name="queue-and-cache" title="Queue and cache" columns={INFRA_COLUMNS} rows={infra} />} />
           <div className="grid grid-cols-2 gap-3">
             {infra.map((s) => (
               <Card key={s.name} as="button" onClick={() => inspect('service', s.name)} className="press text-left flex flex-col gap-2.5">
@@ -169,7 +239,7 @@ export default function Infrastructure() {
         </section>
 
         <section className="animate-rise" style={{ animationDelay: '120ms' }}>
-          <SectionTitle title="Scheduled jobs" />
+          <SectionTitle title="Scheduled jobs" right={<ExportButton name="scheduled-jobs" title="Scheduled jobs" columns={CRON_COLUMNS} rows={jobs?.cronjobs || []} />} />
           <Card pad={false} className="overflow-hidden">
             {!(jobs?.cronjobs || []).length && <Empty icon="clock" tone="gray" title="No CronJobs" />}
             {(jobs?.cronjobs || []).map((c) => (
@@ -198,7 +268,7 @@ export default function Infrastructure() {
         </section>
 
         <section className="animate-rise" style={{ animationDelay: '140ms' }}>
-          <SectionTitle title="Certificates" subtitle="Google-managed TLS on the load balancer" />
+          <SectionTitle title="Certificates" subtitle="Google-managed TLS on the load balancer" right={<ExportButton name="certificates" title="Certificates" columns={CERT_COLUMNS} rows={certs} />} />
           <Card pad={false} className="overflow-hidden">
             {!certs.length && <Empty icon="seal" tone="gray" title="No managed certificates found" />}
             {certs.map((c) => (
@@ -223,7 +293,7 @@ export default function Infrastructure() {
         </section>
 
         <section className="animate-rise" style={{ animationDelay: '160ms' }}>
-          <SectionTitle title="Cloud Run" subtitle="Serverless services outside the cluster" />
+          <SectionTitle title="Cloud Run" subtitle="Serverless services outside the cluster" right={<ExportButton name="cloud-run" title="Cloud Run" columns={RUN_COLUMNS} rows={cloudRun} />} />
           <Card pad={false} className="overflow-hidden">
             {!cloudRun.length && <Empty icon="cloud" tone="gray" title="No Cloud Run services" />}
             {cloudRun.map((r) => (
@@ -243,7 +313,7 @@ export default function Infrastructure() {
       </div>
 
       <section className="mt-8 animate-rise" style={{ animationDelay: '180ms' }}>
-        <SectionTitle title="Ingress routes" subtitle={ingress[0]?.ip ? `Load balancer ${ingress[0].ip}` : 'Which service answers which URL'} />
+        <SectionTitle title="Ingress routes" subtitle={ingress[0]?.ip ? `Load balancer ${ingress[0].ip}` : 'Which service answers which URL'} right={<ExportButton name="ingress-routes" title="Ingress routes" columns={ROUTE_COLUMNS} rows={ingress.flatMap((i) => i.rules || [])} />} />
         <Card pad={false} className="overflow-hidden">
           {ingress.flatMap((i) => i.rules).map((r, idx) => (
             <button key={idx} type="button" onClick={() => r.workload && inspect('service', r.workload)} className="w-full text-left grid grid-cols-[220px_minmax(0,1fr)_200px] gap-4 px-4 py-2.5 hairline-b hover:bg-fill-4 text-callout">
