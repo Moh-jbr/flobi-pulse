@@ -27,6 +27,7 @@ one service at a time.
 | **Database** | Cloud SQL status, setup and recent operations (backups, maintenance, restarts, setting changes), whether the apps can connect, connection-limit hits and deadlocks, plus Postgres errors and slow statements live. |
 | **Frontends** | Uptime of every app, Cloudflare edge traffic and **52x "origin unreachable" errors** (these never reach Google's logs), Cloudflare Pages deploy status, and Sentry per app. |
 | **Timeline** | What happened in any time range, rebuilt from Google's history. |
+| **Versions** | Every release of the team's repos (from `flobi-release/repos.json`) with its version and changelog, newest first or by product, plus a notification when a new one ships. Needs your own read-only GitHub token. |
 | **While you were away** | Opens automatically when you come back (after quitting, sleeping or being away more than 10 minutes). Example: "03:02 brand restarted 3× (out of memory) · 03:04 gateway: 1,284 failed requests over 4 min · 2 new frontend errors in flobi-flow". |
 
 **Alerts** come as native notifications (in-app banners when the window is in

@@ -109,6 +109,7 @@ export function normalizeEntry(e, ctx = {}) {
       severity: e.severity || 'DEFAULT',
       text: text.length > 8000 ? `${text.slice(0, 8000)}…` : text,
       json: json && Object.keys(json).length > 1 ? json : null,
+      trace: e.trace || null, // matches the load balancer request that caused it
       source: 'cloud',
     };
   }

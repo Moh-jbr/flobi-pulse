@@ -6,6 +6,8 @@ import { cx, HealthPill, StatusDot, STATE_TONE } from './ui.jsx';
 
 const VIEWS = [
   ['overview', 'Overview', 'overview'],
+  ['recent', 'Recent issues', 'bell'],
+  ['versions', 'Versions', 'tag'],
   ['traffic', 'Live Traffic', 'traffic'],
   ['errors', 'Errors', 'errors'],
   ['crashes', 'Crashes & Down', 'crashes'],

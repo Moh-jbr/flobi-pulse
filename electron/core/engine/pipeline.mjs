@@ -4,6 +4,7 @@
 import { buildModel, makeRouter, slim, summarizeEvent, workloadOf, cpuMilli, bytes } from './model.mjs';
 import { ErrorBook } from './errors.mjs';
 import { AlertBook, evaluateConditions, certificateImpact } from './alerts.mjs';
+import { crashCopy } from './alert-copy.mjs';
 import { TrafficStats } from './traffic.mjs';
 import { shortName, DB_CONN_ERROR } from './log-parse.mjs';
 
@@ -230,9 +231,11 @@ export class Pipeline {
     if (patch.issues && this.sentry.primed) {
       for (const i of patch.issues) {
         if (!before.has(i.id) && this.now() - i.firstSeen < 30 * MIN) {
-          this.alerts.happen({ key: `sentry:${i.id}`, kind: 'frontend', severity: i.level === 'fatal' ? 'critical' : 'warning', title: `New frontend error in ${i.project}`, detail: i.title, view: { to: 'errors', filter: { source: 'frontend' }, id: `sentry:${i.id}` } });
+          const who = i.users ? `${i.users} user${i.users === 1 ? '' : 's'} hit it so far` : 'Users are hitting it in the browser';
+          this.alerts.happen({ key: `sentry:${i.id}`, kind: 'frontend', severity: i.level === 'fatal' ? 'critical' : 'warning', title: `New error in the ${i.project} app: ${String(i.title).slice(0, 90)}`, detail: `${i.title}${i.culprit ? ` · in ${i.culprit}` : ''}`, impact: `${who}${i.unhandled ? ', and it crashes the page' : ''}.`, action: 'Open it for the stack trace, or view it in Sentry.', view: { to: 'errors', filter: { source: 'frontend' }, id: `sentry:${i.id}` } });
         } else if (i.substatus === 'regressed' || i.substatus === 'escalating') {
-          this.alerts.happen({ key: `sentry-${i.substatus}:${i.id}`, kind: 'frontend', severity: 'warning', title: `Frontend error ${i.substatus} in ${i.project}`, detail: i.title, view: { to: 'errors', filter: { source: 'frontend' }, id: `sentry:${i.id}` } });
+          const regressed = i.substatus === 'regressed';
+          this.alerts.happen({ key: `sentry-${i.substatus}:${i.id}`, kind: 'frontend', severity: 'warning', title: regressed ? `A fixed error is back in the ${i.project} app` : `An error in the ${i.project} app is happening much more often`, detail: i.title, impact: regressed ? 'It was marked as fixed, so the fix was undone or didn’t cover every case.' : 'More users are hitting it than usual.', action: 'Open it to see when it came back and on which pages.', view: { to: 'errors', filter: { source: 'frontend' }, id: `sentry:${i.id}` } });
         }
       }
     }
@@ -312,14 +315,12 @@ export class Pipeline {
     this.crashes = this.crashes.filter((x) => this.now() - x.at < 24 * 60 * MIN).sort((a, b) => b.at - a.at).slice(0, 300);
     this.dirty.add('crashes');
     if (live) {
-      const oom = crash.reason === 'OOMKilled';
       this.alerts.happen({
         key: `crash:${crash.id}`,
         kind: 'crash',
         service,
-        severity: oom ? 'critical' : 'warning',
-        title: oom ? `${service} ran out of memory` : `${service} restarted`,
-        detail: `${crash.pod} · ${crash.reason}${crash.exitCode != null ? ` (exit ${crash.exitCode})` : ''} · ${crash.restarts} restart${crash.restarts === 1 ? '' : 's'} so far`,
+        severity: crash.reason === 'OOMKilled' ? 'critical' : 'warning',
+        ...crashCopy(crash),
         at,
         view: { to: 'crashes', id: crash.id },
       });
@@ -336,8 +337,10 @@ export class Pipeline {
       kind: 'errors',
       service: g.service,
       severity: 'warning',
-      title: `New error in ${g.service}`,
-      detail: g.title,
+      title: `New error in ${shortName(g.service)}: ${String(g.title).slice(0, 90)}`,
+      detail: `${g.title}${g.context ? ` · in ${g.context}` : ''}`,
+      impact: 'An error type this service has never logged before, so something just changed: a deploy, a new input or a dependency.',
+      action: 'Open it for the stack trace, the pods involved and how often it happens.',
       view: { to: 'errors', id: g.id },
     });
   }

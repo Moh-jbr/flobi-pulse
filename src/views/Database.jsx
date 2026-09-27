@@ -5,6 +5,30 @@ import { Card, SectionTitle, Empty, Pill, KeyValue, cx, useNow, Segmented, InfoT
 import Icon from '../components/icons.jsx';
 import CloudSqlForm, { DatabaseKey } from '../components/CloudSqlForm.jsx';
 import { num, ago, dayTime, duration } from '../lib/format.js';
+import ExportButton from '../components/ExportButton.jsx';
+
+const OPERATION_COLUMNS = [
+  { label: 'Started', get: (o) => (o.startedAt ? new Date(o.startedAt) : '') },
+  { label: 'Operation', get: (o) => o.label },
+  { label: 'Type', get: (o) => o.type },
+  { label: 'Status', get: (o) => (o.failed ? 'Failed' : o.status === 'DONE' ? 'Done' : 'Running') },
+  { label: 'Took (min)', get: (o) => (o.endedAt && o.startedAt ? Math.round((o.endedAt - o.startedAt) / 6000) / 10 : '') },
+  { label: 'Can interrupt connections', get: (o) => (o.disruptive ? 'yes' : '') },
+  { label: 'By', get: (o) => o.by || '' },
+  { label: 'Instance', get: (o) => o.instance || '' },
+  { label: 'Error', get: (o) => o.error || '' },
+];
+const CONN_ERROR_COLUMNS = [
+  { label: 'When', get: (x) => new Date(x.ts) },
+  { label: 'Service', get: (x) => x.service },
+  { label: 'Log line', get: (x) => x.text },
+];
+const PG_LOG_COLUMNS = [
+  { label: 'When', get: (e) => new Date(e.ts) },
+  { label: 'Level', get: (e) => (e.slow ? 'Slow' : e.level) },
+  { label: 'Duration (ms)', get: (e) => (e.slow ? e.durationMs : '') },
+  { label: 'Message', get: (e) => e.text },
+];
 
 // What each box means, in plain words (the (i) next to it). Keep these in step
 // with how the numbers are worked out in pipeline.databaseView() and alerts.mjs.
@@ -217,6 +241,9 @@ export default function Database() {
               <div className="px-4 pt-3.5 pb-2 text-headline font-semibold flex items-center gap-1.5">
                 Recent activity
                 <InfoTip {...INFO.activity} />
+                <span className="ml-auto font-normal">
+                  <ExportButton name={`database-activity-${d.name}`} title="Database activity" columns={OPERATION_COLUMNS} rows={(db.operations || []).filter((o) => !o.instance || o.instance === d.name)} />
+                </span>
               </div>
               <Activity operations={(db.operations || []).filter((o) => !o.instance || o.instance === d.name)} now={now} />
             </Card>
@@ -226,7 +253,7 @@ export default function Database() {
 
       {reach.last15m > 0 && (
         <section className="mb-8 animate-rise">
-          <SectionTitle title="Connection errors from the apps" info={INFO.connErrors} subtitle={`Services that couldn't talk to the database in the last 15 minutes: ${reach.services.join(', ')}`} />
+          <SectionTitle title="Connection errors from the apps" info={INFO.connErrors} right={<ExportButton name="database-connection-errors" title="Connection errors" columns={CONN_ERROR_COLUMNS} rows={reach.latest} />} subtitle={`Services that couldn't talk to the database in the last 15 minutes: ${reach.services.join(', ')}`} />
           <Card pad={false} className="overflow-hidden">
             {reach.latest.map((x, i) => (
               <div key={i} className="px-4 py-2.5 hairline-b grid grid-cols-[80px_140px_minmax(0,1fr)] gap-3 items-start">
@@ -245,15 +272,18 @@ export default function Database() {
           info={INFO.log}
           subtitle={db?.logsNote || 'Errors, warnings and slow statements from Cloud SQL, live'}
           right={
-            <Segmented
-              size="sm"
-              value={tab}
-              onChange={setTab}
-              options={[
-                { value: 'errors', label: 'Errors & warnings', count: errors.length },
-                { value: 'slow', label: 'Slow queries', count: slow.length },
-              ]}
-            />
+            <>
+              <Segmented
+                size="sm"
+                value={tab}
+                onChange={setTab}
+                options={[
+                  { value: 'errors', label: 'Errors & warnings', count: errors.length },
+                  { value: 'slow', label: 'Slow queries', count: slow.length },
+                ]}
+              />
+              <ExportButton name={tab === 'errors' ? 'postgres-errors' : 'postgres-slow-queries'} title={tab === 'errors' ? 'Postgres errors' : 'Slow queries'} columns={PG_LOG_COLUMNS} rows={tab === 'errors' ? errors : slow} />
+            </>
           }
         />
         <Card pad={false} className="overflow-hidden">

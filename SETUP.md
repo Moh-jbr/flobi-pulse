@@ -209,6 +209,30 @@ In the app: **Settings → Integrations → Cloudflare**. Enter the token and yo
 
 ---
 
+## 3b. Connect GitHub (the Versions page)
+
+The **Versions** page lists every release of the team's repos with its changelog,
+and notifies you when a new one ships. The list of repos comes from
+`flobi-release/repos.json` (set in `config/team.config.json` → `versions.manifest`),
+so a repo appears as soon as it's rolled out there.
+
+The repos are private, so **each person** creates their own read-only token (never
+put one in the team config: the repo is public):
+
+1. GitHub → Settings → Developer settings → Personal access tokens →
+   **Fine-grained tokens** → Generate new token.
+2. Resource owner: **4ow4-Developers**. Repository access: **All repositories**.
+3. Permissions → Repository → **Contents: Read-only**. (Metadata: Read-only is
+   added automatically.) Nothing else.
+4. In the app: **Settings → Integrations → GitHub**, paste it, **Save**. If the
+   organization requires approval for fine-grained tokens, an owner approves it once.
+
+The read-only guard only lets the app read `repos.json` and each repo's release list.
+Checks run every 5 minutes; unchanged answers don't count against GitHub's rate limit.
+Cost: $0.
+
+---
+
 ## 4. Publish a release (installers for Windows, macOS and Linux)
 
 Releases are built by GitHub Actions from the public repo

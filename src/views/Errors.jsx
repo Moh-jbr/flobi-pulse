@@ -5,6 +5,22 @@ import { Card, Segmented, SearchField, Toggle, Empty, Pill, cx, useNow, Button }
 import { Sparkline } from '../components/charts.jsx';
 import Icon from '../components/icons.jsx';
 import { ago, compact, short } from '../lib/format.js';
+import ExportButton from '../components/ExportButton.jsx';
+
+const ERROR_COLUMNS = [
+  { label: 'Error', get: (g) => g.title },
+  { label: 'Where', get: (g) => (g.source === 'frontend' ? 'Frontend' : 'Backend') },
+  { label: 'Service / app', get: (g) => (g.source === 'frontend' ? g.project : short(g.service)) },
+  { label: 'Location', get: (g) => g.context || g.culprit || '' },
+  { label: 'Count', get: (g) => g.count },
+  { label: 'Last hour', get: (g) => (g.source === 'frontend' ? '' : g.count1h) },
+  { label: 'Users affected', get: (g) => (g.source === 'frontend' ? g.users : '') },
+  { label: 'Pods', get: (g) => (g.pods || []).join(', ') },
+  { label: 'First seen', get: (g) => (g.firstSeen ? new Date(g.firstSeen) : '') },
+  { label: 'Last seen', get: (g) => (g.lastSeen ? new Date(g.lastSeen) : '') },
+  { label: 'New', get: (g) => (g.isNew ? 'yes' : '') },
+  { label: 'Status', get: (g) => g.substatus || '' },
+];
 
 function Row({ g, now, selected }) {
   const frontend = g.source === 'frontend';
@@ -98,8 +114,9 @@ export default function Errors() {
         <label className="inline-flex items-center gap-2 text-callout text-label-2 ml-2">
           <Toggle checked={activeOnly} onChange={setActiveOnly} label="Active in the last hour" /> Active in the last hour
         </label>
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-2">
           <SearchField value={q} onChange={setQ} placeholder="Message, service, file…" width={260} />
+          <ExportButton name="errors" title="Errors" columns={ERROR_COLUMNS} rows={list} />
         </div>
       </div>
 

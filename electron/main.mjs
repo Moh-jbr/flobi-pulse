@@ -14,9 +14,11 @@ import { DemoConnector } from './core/engine/demo.mjs';
 import { SentryClient, SENTRY_SAAS_HOSTS, cleanSentryToken, sentryTokenProblem, explainSentryError } from './core/sources/sentry.mjs';
 import { parseConnectionName } from './core/sources/cloudsql.mjs';
 import { CloudflareClient } from './core/sources/cloudflare.mjs';
-import { deniedAttempts, resetGuard } from './core/net/guard.mjs';
+import { deniedAttempts, resetGuard, configureGuard } from './core/net/guard.mjs';
 import { destroyAgents } from './core/net/http.mjs';
 import { Updater } from './updater.mjs';
+import { GitHubClient } from './core/sources/github.mjs';
+import { VersionsWatcher } from './core/engine/versions.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isMac = process.platform === 'darwin';
@@ -25,10 +27,9 @@ const DEV_URL = process.env.PULSE_DEV_URL || null;
 const START_IN_DEMO = process.argv.includes('--demo');
 const MIN = 60_000;
 
-// Translucent window material only on macOS. On Windows, a see-through (Mica)
-// window makes every repaint of the live lists expensive, which is what made
-// scrolling laggy, so it gets a normal solid window.
-const nativeMaterial = isMac;
+// Every platform gets a normal solid window. A see-through one (macOS vibrancy,
+// Windows Mica) let the desktop show around and through the sidebar and panels,
+// so they no longer matched the content; on Windows it also made scrolling laggy.
 
 app.setName('Flobi Pulse');
 if (isWin) app.setAppUserModelId('ai.flobi.pulse');
@@ -54,6 +55,7 @@ let lastHealth = null;
 const follows = new Map();
 let followSeq = 0;
 let updater = null;
+let versions = null; // VersionsWatcher, when a GitHub token is set
 
 // ── Utilities ────────────────────────────────────────────────────────────────
 function send(message) {
@@ -124,7 +126,7 @@ async function loadTeamConfig() {
 }
 
 function config() {
-  return effectiveConfig(team, settingsStore.get(), { sentryToken: secrets.get('sentryToken'), cloudflareToken: secrets.get('cloudflareToken') });
+  return effectiveConfig(team, settingsStore.get(), { sentryToken: secrets.get('sentryToken'), cloudflareToken: secrets.get('cloudflareToken'), githubToken: secrets.get('githubToken') });
 }
 
 /** The optional second key, for a database in another Google Cloud project. */
@@ -139,6 +141,56 @@ function databaseAuth() {
   }
 }
 
+// ── Versions page: the team's GitHub releases ────────────────────────────────
+function versionsState() {
+  const v = config().versions;
+  const base = versions?.state || (!v ? { status: 'off' } : !v.token ? { status: 'needs-token' } : { status: 'loading' });
+  return { ...base, owner: v?.owner || null, viewedAt: stateStore.get().versionsViewedAt || 0 };
+}
+
+function startVersions() {
+  versions?.stop();
+  versions = null;
+  const v = config().versions;
+  if (v?.token) {
+    configureGuard({ github: v });
+    versions = new VersionsWatcher({
+      client: new GitHubClient({ token: v.token, owner: v.owner }),
+      manifestRepo: v.manifestRepo,
+      manifestPath: v.manifestPath,
+      saved: stateStore.get().versionsSaved || {},
+      onSave: (saved) => stateStore.update({ versionsSaved: saved }),
+      onChange: () => send({ t: 'versions', versions: versionsState() }),
+      onNew: notifyReleases,
+    });
+    versions.start();
+  }
+  send({ t: 'versions', versions: versionsState() });
+}
+
+/** "Drive: flobi_drive v2.1.0 is out", as a toast (window in front) or a system notification. */
+function notifyReleases(all) {
+  // A repo starting to version (its first, baseline release) isn't news.
+  const list = all.filter((r) => !r.baseline);
+  if (!list.length || settingsStore.get().notifications.releases === false) return;
+  const one = list.length === 1 ? list[0] : null;
+  const alert = {
+    id: `release:${Date.now()}`,
+    severity: 'info',
+    title: one ? `${one.product}: ${one.repo} ${one.tag} is out` : `${list.length} new versions are out`,
+    detail: one ? [one.notes.breaking ? 'Breaking changes' : null, one.notes.first].filter(Boolean).join(' · ') : list.slice(0, 4).map((r) => `${r.repo} ${r.tag}`).join(' · '),
+    view: { to: 'versions' },
+  };
+  if (win && win.isFocused() && windowVisible()) return send({ t: 'toast', alert });
+  if (!Notification.isSupported()) return;
+  const n = new Notification({ title: alert.title, body: alert.detail, silent: true, icon: isWin ? path.join(__dirname, 'assets', 'icon.png') : undefined });
+  n.on('click', () => {
+    showWindow();
+    send({ t: 'nav', to: alert.view });
+  });
+  n.show();
+}
+
 /** Who the database key is, for the UI (never the key itself). */
 function databaseKeyInfo() {
   const id = databaseAuth()?.identity;
@@ -150,7 +202,6 @@ function publicInfo() {
   return {
     platform: process.platform,
     version: app.getVersion(),
-    nativeMaterial,
     mode,
     identity: auth?.identity || (mode === 'demo' ? { kind: 'demo', email: 'demo@flobi.ai', name: 'Demo mode' } : null),
     team: {
@@ -164,9 +215,11 @@ function publicInfo() {
       cloudflare: { accountId: c.cloudflare.accountId || '', zones: c.cloudflare.zones || [], hasToken: !!c.cloudflare.token, tokenFromTeam: !secrets.get('cloudflareToken') && !!team.cloudflare?.token },
       cloudsql: { instances: settingsStore.get().overrides?.cloudsql?.instances || [], fromTeam: team.cloudsql?.instances || [] },
       databaseKey: databaseKeyInfo(),
+      github: { hasToken: !!secrets.get('githubToken'), owner: c.versions?.owner || null },
     },
     uptime: c.uptime,
     update: updater?.state || null,
+    versions: versionsState(),
     settings: settingsStore.get(),
     secretsEncrypted: secrets.encrypted,
   };
@@ -186,11 +239,10 @@ function createWindow() {
     title: 'Flobi Pulse',
     icon: path.join(__dirname, 'assets', 'icon.png'),
     // Same as --bg-content, so the first paint doesn't flash a different shade.
-    backgroundColor: nativeMaterial ? '#00000000' : dark ? '#161618' : '#ffffff',
+    backgroundColor: dark ? '#161618' : '#ffffff',
     titleBarStyle: isMac ? 'hiddenInset' : 'hidden',
-    ...(isMac ? { trafficLightPosition: { x: 22, y: 22 }, vibrancy: 'sidebar', visualEffectState: 'followWindow' } : {}),
+    ...(isMac ? { trafficLightPosition: { x: 22, y: 22 } } : {}),
     ...(isWin ? { titleBarOverlay: { color: '#00000000', symbolColor: dark ? '#f5f5f7' : '#1d1d1f', height: 52 } } : {}),
-    ...(isWin && nativeMaterial ? { backgroundMaterial: 'mica' } : {}),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -199,9 +251,11 @@ function createWindow() {
       spellcheck: false,
       // Alert sounds must play without a click first (also while in the tray).
       autoplayPolicy: 'no-user-gesture-required',
-      additionalArguments: [`--pulse-platform=${process.platform}`, `--pulse-material=${nativeMaterial ? 1 : 0}`, `--pulse-version=${app.getVersion()}`],
+      additionalArguments: [`--pulse-platform=${process.platform}`, `--pulse-version=${app.getVersion()}`],
     },
   });
+  // Like Discord: look for a new version when the window comes back to the front.
+  win.on('focus', () => updater?.checkIfStale());
 
   win.once('ready-to-show', () => win.show());
   win.on('close', (e) => {
@@ -274,6 +328,7 @@ function openExternalSafe(url) {
     /^[a-z0-9-]+\.flobi\.ai$/.test(h) ||
     h === 'handoff.zip' ||
     (h === 'github.com' && !!updater?.repo && u.pathname.toLowerCase().startsWith(`/${updater.repo.toLowerCase()}/`)) ||
+    (h === 'github.com' && !!c.versions?.owner && u.pathname.toLowerCase().startsWith(`/${c.versions.owner.toLowerCase()}/`)) ||
     uptimeHosts.has(h);
   if (ok) shell.openExternal(u.toString());
 }
@@ -344,7 +399,8 @@ function notify(alert, meta = {}) {
   if (!Notification.isSupported()) return;
   const n = new Notification({
     title: alert.title,
-    body: alert.detail || '',
+    // The evidence, then what to do about it.
+    body: [alert.detail, alert.action].filter(Boolean).join('\n'),
     // Silent when the app plays its own sound; the system sound is the fallback.
     silent: ownSound || !s.sound,
     icon: isWin ? path.join(__dirname, 'assets', 'icon.png') : undefined,
@@ -370,7 +426,10 @@ function newPipeline(kind) {
     emit: (type, payload) => {
       if (type === 'state') {
         send({ t: 'state', sections: payload });
-        if (payload.alerts) alarm.check();
+        if (payload.alerts) {
+          alarm.check();
+          if (kind === 'live') saveAlertHistorySoon();
+        }
         if (payload.health || payload.alerts) {
           const h = payload.health?.overall;
           if (h !== lastHealth || payload.alerts) {
@@ -383,7 +442,17 @@ function newPipeline(kind) {
       }
     },
   });
+  // The Recent page: alerts from earlier runs (last 7 days).
+  if (kind === 'live') pipeline.alerts.loadHistory(stateStore.get().alertHistory || []);
   return pipeline;
+}
+
+let historyTimer = null;
+function saveAlertHistorySoon() {
+  clearTimeout(historyTimer);
+  historyTimer = setTimeout(() => {
+    if (pipeline && mode === 'live') stateStore.update({ alertHistory: pipeline.alerts.historyToSave() });
+  }, 5_000);
 }
 
 /**
@@ -409,7 +478,10 @@ async function stopConnector() {
   heartbeat = null;
   // lastSeenAt is only moved forward by the heartbeat, on sleep and on quit, so a
   // restart (e.g. after waking up) still knows where the recap should start.
-  if (pipeline && mode === 'live') await stateStore.update({ knownErrors: pipeline.knownErrors() });
+  if (pipeline && mode === 'live') {
+    clearTimeout(historyTimer);
+    await stateStore.update({ knownErrors: pipeline.knownErrors(), alertHistory: pipeline.alerts.historyToSave() });
+  }
   pipeline?.destroy();
   pipeline = null;
   resetGuard();
@@ -541,7 +613,7 @@ const commands = {
     };
     const bool = (v) => typeof v === 'boolean';
     pick('appearance', { theme: (v) => ['system', 'light', 'dark'].includes(v), glass: (v) => typeof v === 'number' && v >= 0 && v <= 1, density: (v) => ['regular', 'compact'].includes(v) });
-    pick('notifications', { critical: bool, warning: bool, info: bool, sound: bool, alarmRepeat: bool, volume: (v) => typeof v === 'number' && v >= 0 && v <= 1 });
+    pick('notifications', { critical: bool, warning: bool, info: bool, releases: bool, sound: bool, alarmRepeat: bool, volume: (v) => typeof v === 'number' && v >= 0 && v <= 1 });
     pick('general', { keepRunningInTray: bool, openAtLogin: bool, liveIncludesInfoLogs: bool });
     patch = clean;
     await settingsStore.update(patch);
@@ -553,7 +625,12 @@ const commands = {
     return publicInfo();
   },
 
-  'integrations:set': async ({ sentry, cloudflare }) => {
+  'integrations:set': async ({ sentry, cloudflare, github }) => {
+    if (github) {
+      if ('token' in github) await secrets.set('githubToken', String(github.token || '').trim() || null);
+      startVersions();
+      if (!sentry && !cloudflare) return publicInfo();
+    }
     const overrides = { ...settingsStore.get().overrides };
     if (sentry) {
       const host = validSentryHost(sentry.host || 'sentry.io');
@@ -641,6 +718,16 @@ const commands = {
       }
       throw new Error(explainSentryError(first, orgSlug));
     }
+    if (kind === 'github') {
+      const v = c.versions;
+      if (!v) throw new Error('No release manifest is set in the team config (versions.manifest).');
+      const token = String(cfg.token || v.token || '').trim();
+      if (!token) throw new Error('Paste a GitHub token first.');
+      configureGuard({ github: v });
+      const manifest = await new GitHubClient({ token, owner: v.owner }).manifest(v.manifestRepo, v.manifestPath);
+      const all = Object.values(manifest?.repos || {});
+      return { ok: true, message: `Connected · ${all.length} repositories in the release manifest, ${all.filter((r) => !r.skip).length} versioned` };
+    }
     if (kind === 'cloudflare') {
       const client = new CloudflareClient({ token: cfg.token || c.cloudflare.token, accountId: cfg.accountId || c.cloudflare.accountId, zones: cfg.zones || c.cloudflare.zones });
       await client.verify();
@@ -677,6 +764,7 @@ const commands = {
   },
   'logs:previous': async (args) => connector?.previousLogs(args) ?? [],
   'logs:query': async (args) => connector?.queryLogs(args) ?? [],
+  'request:logs': async (args) => connector?.requestLogs?.(args) ?? { match: 'none', lines: [] },
   'recap:get': async ({ since, until }) => connector?.recap({ since, until: until || Date.now() }),
   'usage:get': async (args) => connector?.usage(args),
   'alerts:ack': async ({ id }) => {
@@ -698,6 +786,18 @@ const commands = {
   'open:external': async ({ url }) => {
     openExternalSafe(url);
     return true;
+  },
+  // Table exports (see src/lib/export.js): the user picks where the file goes.
+  'export:save': async ({ name, data }) => {
+    const file = path.basename(String(name || 'export.xlsx'));
+    const ext = path.extname(file).toLowerCase();
+    if (!['.xlsx', '.csv', '.md'].includes(ext)) throw new Error('Only .xlsx, .csv and .md files can be exported.');
+    if (!(data instanceof Uint8Array) || data.length > 256 * 1024 * 1024) throw new Error('The export is empty or too large.');
+    const label = { '.xlsx': 'Excel workbook', '.csv': 'CSV', '.md': 'Markdown' }[ext];
+    const res = await dialog.showSaveDialog(win, { title: 'Export', defaultPath: path.join(app.getPath('downloads'), file), filters: [{ name: label, extensions: [ext.slice(1)] }] });
+    if (res.canceled || !res.filePath) return { canceled: true };
+    await fs.writeFile(res.filePath, data);
+    return { saved: res.filePath };
   },
   'clipboard:write': async ({ text }) => {
     clipboard.writeText(String(text ?? ''));
@@ -721,6 +821,16 @@ const commands = {
 
   // App updates (see updater.mjs). Installing runs in the background; the UI
   // follows along through 'update' events.
+  // Versions page (see core/engine/versions.mjs).
+  'versions:refresh': async () => {
+    await versions?.poll();
+    return versionsState();
+  },
+  'versions:seen': async () => {
+    await stateStore.update({ versionsViewedAt: Date.now() });
+    send({ t: 'versions', versions: versionsState() });
+    return versionsState();
+  },
   'update:check': async () => updater?.check({ manual: true }) ?? null,
   'update:install': async () => {
     updater?.install();
@@ -805,11 +915,13 @@ app.whenReady().then(async () => {
 
   updater = new Updater({ repo: await releaseRepo(), onChange: (update) => send({ t: 'update', update }), quit: () => ((quitting = true), app.quit()) });
   updater.start();
+  startVersions();
 
   if (START_IN_DEMO) await startDemo();
   else await restoreSession();
 
   powerMonitor.on('resume', async () => {
+    updater?.checkIfStale(0);
     // Streams may have died while the laptop slept; reconnect and recap the gap.
     if (mode === 'live') await startLive({ recapSince: stateStore.get().lastSeenAt });
   });

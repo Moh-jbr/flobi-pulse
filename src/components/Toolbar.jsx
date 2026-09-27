@@ -1,11 +1,12 @@
 import { useRef, useState } from 'react';
 import { useStore, setState, navigate, invoke } from '../lib/store.js';
 import Icon from './icons.jsx';
-import { cx, IconButton, Popover, StatusDot, Button, SEV_TONE, Segmented, Empty, useWindowWidth } from './ui.jsx';
+import { cx, IconButton, Popover, StatusDot, Button, SEV_TONE, Segmented, Empty, useWindowWidth, AlertText } from './ui.jsx';
 import { compact, ago, short } from '../lib/format.js';
 
 const TITLES = {
   overview: ['Overview', 'Every service, pod and endpoint at a glance'],
+  recent: ['Recent issues', 'Every alert from the last 7 days: what happened, what it affected and what to do'],
   traffic: ['Live Traffic', 'Every request reaching the load balancer, as it happens'],
   errors: ['Errors', 'Backend errors from every pod, and frontend errors from Sentry'],
   crashes: ['Crashes & Down', "What's broken right now, and what crashed recently"],
@@ -15,6 +16,7 @@ const TITLES = {
   database: ['Database', 'Cloud SQL health and Postgres errors'],
   frontends: ['Frontends', 'Cloudflare edge, Pages deployments and uptime'],
   timeline: ['Timeline', 'Everything that happened, for any time range'],
+  versions: ['Versions', 'Every release of the team’s repos, with its changelog'],
   settings: ['Settings', 'Account, integrations, notifications and appearance'],
 };
 
@@ -78,7 +80,12 @@ function AlertsButton() {
       </span>
       <Popover open={open} onClose={() => setOpen(false)} anchor={ref} width={420}>
         <div className="px-4 pt-3.5 pb-2.5 flex items-center justify-between">
-          <div className="text-title3 font-semibold">Alerts</div>
+          <div className="flex items-baseline gap-2">
+            <div className="text-title3 font-semibold">Alerts</div>
+            <button type="button" className="text-callout text-accent" onClick={() => (setOpen(false), navigate('recent'))}>
+              See all
+            </button>
+          </div>
           <Segmented
             size="sm"
             value={tab}
@@ -97,8 +104,7 @@ function AlertsButton() {
                 <Icon name={a.resolvedAt ? 'check' : a.severity === 'critical' ? 'bolt' : 'errors'} size={13} strokeWidth={2} className={a.resolvedAt ? 'text-green' : `text-${SEV_TONE[a.severity]}`} />
               </div>
               <button type="button" className="min-w-0 flex-1 text-left" onClick={() => (setOpen(false), navigate(a.view || { to: 'crashes' }))}>
-                <div className="text-headline font-semibold leading-5">{a.title}</div>
-                {a.detail && <div className="text-callout text-label-2 mt-0.5 line-clamp-2 break-words">{a.detail}</div>}
+                <AlertText a={a} compact />
                 <div className="text-subheadline text-label-3 mt-1">
                   {a.resolvedAt ? `Resolved ${ago(a.resolvedAt)} · lasted ${Math.max(1, Math.round((a.resolvedAt - a.openedAt) / 60000))}m` : `Since ${ago(a.openedAt)}`}
                   {a.count > 1 ? ` · ${a.count}×` : ''}

@@ -10,6 +10,7 @@ import Tooltips from './components/Tooltips.jsx';
 import ContextMenu from './components/ContextMenu.jsx';
 import SignIn from './views/SignIn.jsx';
 import Overview from './views/Overview.jsx';
+import Recent from './views/Recent.jsx';
 import Traffic from './views/Traffic.jsx';
 import Errors from './views/Errors.jsx';
 import Crashes from './views/Crashes.jsx';
@@ -19,11 +20,12 @@ import Infrastructure from './views/Infrastructure.jsx';
 import Database from './views/Database.jsx';
 import Frontends from './views/Frontends.jsx';
 import Timeline from './views/Timeline.jsx';
+import Versions from './views/Versions.jsx';
 import Settings from './views/Settings.jsx';
 import { Spinner } from './components/ui.jsx';
 
-const VIEWS = { overview: Overview, traffic: Traffic, errors: Errors, crashes: Crashes, logs: Logs, events: Events, infrastructure: Infrastructure, database: Database, frontends: Frontends, timeline: Timeline, settings: Settings };
-const ORDER = ['overview', 'traffic', 'errors', 'crashes', 'logs', 'events', 'infrastructure', 'database', 'frontends'];
+const VIEWS = { overview: Overview, recent: Recent, traffic: Traffic, errors: Errors, crashes: Crashes, logs: Logs, events: Events, infrastructure: Infrastructure, database: Database, frontends: Frontends, timeline: Timeline, versions: Versions, settings: Settings };
+const ORDER = ['overview', 'recent', 'traffic', 'errors', 'crashes', 'logs', 'events', 'infrastructure', 'database', 'frontends'];
 
 function useAppearance(settings) {
   const theme = settings?.appearance?.theme || 'system';

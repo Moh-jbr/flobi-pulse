@@ -49,32 +49,41 @@ export class Updater {
     const reason = this.unsupported();
     if (reason) return this.set({ status: 'unsupported', error: reason });
     configureGuard({ updateRepo: this.repo });
-    setTimeout(() => this.check(), 15_000);
-    this.timer = setInterval(() => this.check(), 2 * HOUR);
+    setTimeout(() => this.check(), 5_000);
+    this.timer = setInterval(() => this.check(), HOUR);
   }
 
   stop() {
     clearInterval(this.timer);
+    clearTimeout(this.retry);
+  }
+
+  /** Checks again if the last check is older than `maxAgeMs` (window focused, computer woke up). */
+  checkIfStale(maxAgeMs = 10 * 60_000) {
+    if (this.state.status !== 'unsupported' && Date.now() - (this.lastCheck || 0) > maxAgeMs) this.check();
   }
 
   async check({ manual = false } = {}) {
     if (['downloading', 'installing', 'unsupported'].includes(this.state.status)) return this.state;
+    this.lastCheck = Date.now();
+    clearTimeout(this.retry);
     if (manual) this.set({ status: 'checking', error: null });
     try {
       const rel = await json({ url: `https://api.github.com/repos/${this.repo}/releases/latest`, headers: { accept: 'application/vnd.github+json' } });
       const version = String(rel?.tag_name || '').replace(/^v/, '');
       const asset = pickAsset(rel, process.platform);
       if (!asset || !isNewer(version, this.state.current)) {
-        this.set({ status: 'idle', checkedAt: Date.now(), error: null });
+        this.set({ status: 'idle', checkedAt: Date.now(), error: null, lastError: null });
       } else {
         this.release = rel;
         this.asset = asset;
-        this.set({ status: 'available', version, notes: String(rel.body || '').slice(0, 1200), size: asset.size || 0, checkedAt: Date.now(), error: null });
+        this.set({ status: 'available', version, notes: String(rel.body || '').slice(0, 1200), size: asset.size || 0, checkedAt: Date.now(), error: null, lastError: null });
       }
     } catch (e) {
-      // Offline or rate-limited: stay quiet and try again at the next check.
+      // Offline or rate-limited: try again in 2 minutes, and say so in Settings.
       console.warn('[update] check failed:', e.message);
-      if (manual || this.state.status === 'checking') this.set({ status: 'idle', error: `Couldn't check for updates: ${e.message}` });
+      this.retry = setTimeout(() => this.check(), 2 * 60_000);
+      this.set({ status: this.state.status === 'checking' ? 'idle' : this.state.status, lastError: e.message, error: manual ? `Couldn't check for updates: ${e.message}` : this.state.error });
     }
     return this.state;
   }

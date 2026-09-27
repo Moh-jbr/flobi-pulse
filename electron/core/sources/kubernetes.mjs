@@ -4,6 +4,8 @@ import { json, streamLines, request, HttpError } from '../net/http.mjs';
 import { configureGuard, K8S_NAME } from '../net/guard.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** How long a pod log stream may take to start before it counts as unreachable. */
+const OPEN_TIMEOUT_MS = 15_000;
 
 function assertNames(...names) {
   for (const n of names) if (!K8S_NAME.test(String(n || ''))) throw new Error(`Invalid Kubernetes name: ${String(n).slice(0, 80)}`);
@@ -83,8 +85,8 @@ export class KubeClient {
     return text;
   }
 
-  async stream(path, onLine, { idleTimeoutMs = 0 } = {}) {
-    return streamLines({ url: this.base + path, ca: this.ca, headers: await this.headers(), onLine, idleTimeoutMs });
+  async stream(path, onLine, { idleTimeoutMs = 0, onOpen } = {}) {
+    return streamLines({ url: this.base + path, ca: this.ca, headers: await this.headers(), onLine, onOpen, idleTimeoutMs });
   }
 
   async version() {
@@ -119,16 +121,35 @@ export class KubeClient {
         const q = new URLSearchParams({ container, follow: 'true', timestamps: 'true' });
         if (lastTs) q.set('sinceTime', lastTs);
         else q.set('tailLines', String(tailLines));
+        // "streaming" only once Kubernetes actually answers. The API server fetches the
+        // logs from the node's kubelet and that can hang; after OPEN_TIMEOUT_MS it's
+        // reported as "unreachable" and retried, instead of looking connected forever.
+        let opened = false;
+        let timer = null;
         try {
-          onStatus?.('streaming');
-          current = await this.stream(`/api/v1/namespaces/${namespace}/pods/${pod}/log?${q}`, (line) => {
-            const m = line.match(/^(\d{4}-\d{2}-\d{2}T[\d:.]+Z) (.*)$/);
-            if (m) lastTs = m[1];
-            onLine(m ? m[2] : line, m ? Date.parse(m[1]) : Date.now());
-          });
+          onStatus?.('opening');
+          current = await this.stream(
+            `/api/v1/namespaces/${namespace}/pods/${pod}/log?${q}`,
+            (line) => {
+              const m = line.match(/^(\d{4}-\d{2}-\d{2}T[\d:.]+Z) (.*)$/);
+              if (m) lastTs = m[1];
+              onLine(m ? m[2] : line, m ? Date.parse(m[1]) : Date.now());
+            },
+            {
+              onOpen: () => {
+                opened = true;
+                clearTimeout(timer);
+                attempt = 0;
+                onStatus?.('streaming');
+              },
+            },
+          );
+          if (!opened) timer = setTimeout(() => !opened && current.abort(), OPEN_TIMEOUT_MS);
           await current.done;
-          attempt = 0;
+          clearTimeout(timer);
+          if (!opened && !stopped) onStatus?.('unreachable', `Kubernetes didn't start sending this pod's logs within ${OPEN_TIMEOUT_MS / 1000} s.`);
         } catch (e) {
+          clearTimeout(timer);
           if (stopped) break;
           if (e.status === 403) {
             onStatus?.('forbidden', e.message);

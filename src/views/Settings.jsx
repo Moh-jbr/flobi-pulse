@@ -42,6 +42,12 @@ function statusTone(st) {
 
 const clean = (e) => String(e?.message || e).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
 
+const INTEGRATION = {
+  sentry: { title: 'Sentry', sub: 'Frontend errors from the React apps', icon: 'errors', tone: 'bg-purple', placeholder: 'Integration token (not the Client Secret)' },
+  cloudflare: { title: 'Cloudflare', sub: 'Edge traffic, 52x origin errors and Pages deploys', icon: 'globe', tone: 'bg-orange', placeholder: 'Read-only API token' },
+  github: { title: 'GitHub', sub: 'Release notes of the team’s repos, for the Versions page', icon: 'tag', tone: 'bg-gray', placeholder: 'Fine-grained token with Contents: Read-only' },
+};
+
 function IntegrationForm({ kind, info, sources }) {
   const cfg = info.integrations[kind];
   const [host, setHost] = useState(cfg.host || 'sentry.io');
@@ -51,21 +57,25 @@ function IntegrationForm({ kind, info, sources }) {
   const [token, setToken] = useState('');
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(null);
+  const withToken = token ? { token: token.trim() } : {};
   const payload = () =>
     kind === 'sentry'
-      ? { host: host.trim(), org: org.trim(), ...(token ? { token: token.trim() } : {}) }
-      : { accountId: accountId.trim(), zones: zones.split(',').map((z) => z.trim()).filter(Boolean), ...(token ? { token: token.trim() } : {}) };
+      ? { host: host.trim(), org: org.trim(), ...withToken }
+      : kind === 'cloudflare'
+        ? { accountId: accountId.trim(), zones: zones.split(',').map((z) => z.trim()).filter(Boolean), ...withToken }
+        : withToken;
+  const k = INTEGRATION[kind];
   const src = sources?.[kind];
 
   return (
     <div className="px-4 py-4 flex flex-col gap-3">
       <div className="flex items-center gap-2">
-        <div className={cx('w-7 h-7 rounded-[8px] grid place-items-center text-white', kind === 'sentry' ? 'bg-purple' : 'bg-orange')}>
-          <Icon name={kind === 'sentry' ? 'errors' : 'globe'} size={15} strokeWidth={1.9} />
+        <div className={cx('w-7 h-7 rounded-[8px] grid place-items-center text-white', k.tone)}>
+          <Icon name={k.icon} size={15} strokeWidth={1.9} />
         </div>
         <div className="flex-1">
-          <div className="text-body font-medium">{kind === 'sentry' ? 'Sentry' : 'Cloudflare'}</div>
-          <div className="text-subheadline text-label-2">{kind === 'sentry' ? 'Frontend errors from the React apps' : 'Edge traffic, 52x origin errors and Pages deploys'}</div>
+          <div className="text-body font-medium">{k.title}</div>
+          <div className="text-subheadline text-label-2">{k.sub}</div>
         </div>
         <span className="inline-flex items-center gap-1.5 text-subheadline text-label-2">
           <StatusDot tone={statusTone(src?.status)} size={7} />
@@ -96,16 +106,21 @@ function IntegrationForm({ kind, info, sources }) {
             <span className="text-label-2">Organization</span>
             <TextField value={org} onChange={setOrg} placeholder="your-org-slug" mono />
           </>
-        ) : (
+        ) : kind === 'cloudflare' ? (
           <>
             <span className="text-label-2">Account ID</span>
             <TextField value={accountId} onChange={setAccountId} placeholder="32-character account ID (for Pages)" mono />
             <span className="text-label-2">Zones</span>
             <TextField value={zones} onChange={setZones} placeholder="flobi.ai" mono />
           </>
+        ) : (
+          <>
+            <span className="text-label-2">Organization</span>
+            <span className="font-mono text-label-2">{cfg.owner || 'not set in the team config'}</span>
+          </>
         )}
         <span className="text-label-2">API token</span>
-        <TextField type="password" value={token} onChange={setToken} placeholder={cfg.hasToken ? '•••••••• saved (leave empty to keep)' : kind === 'sentry' ? 'Integration token (not the Client Secret)' : 'Read-only API token'} mono />
+        <TextField type="password" value={token} onChange={setToken} placeholder={cfg.hasToken ? '•••••••• saved (leave empty to keep)' : k.placeholder} mono />
       </div>
       <div className="flex items-center gap-2">
         <span className={cx('text-callout flex-1', result?.ok ? 'text-green' : 'text-red')}>{result?.message}</span>
@@ -254,7 +269,7 @@ function UpdatesRow({ version }) {
   const status = u?.status || 'unsupported';
   const pct = Math.round((u?.progress || 0) * 100);
   const detail = {
-    idle: u?.error || (u?.checkedAt ? `Up to date · checked ${ago(u.checkedAt)}` : 'Up to date'),
+    idle: u?.error || (u?.lastError ? `Last check failed: ${u.lastError}. Trying again in 2 minutes.` : u?.checkedAt ? `Up to date · checked ${ago(u.checkedAt)}` : 'Up to date'),
     checking: 'Checking for a new version…',
     available: `Version ${u?.version} is ready to install`,
     downloading: `Downloading version ${u?.version} · ${pct}%`,
@@ -316,9 +331,10 @@ export default function Settings() {
         <Row label="Cluster" detail={`${session?.cluster?.name || info.team.clusterName} · ${session?.cluster?.location || info.team.clusterLocation}${session?.cluster?.endpoint ? ` · ${session.cluster.endpoint}` : ''}`} icon="infrastructure" tone="bg-indigo" />
       </Group>
 
-      <Group title="Integrations" footer="Tokens are encrypted with your computer's keychain and never leave this machine except to talk to Sentry or Cloudflare.">
+      <Group title="Integrations" footer="Tokens are encrypted with your computer's keychain and never leave this machine except to talk to Sentry, Cloudflare or GitHub. The GitHub token can only read release notes.">
         <IntegrationForm kind="sentry" info={info} sources={sources} />
         <IntegrationForm kind="cloudflare" info={info} sources={sources} />
+        {info.integrations.github && <IntegrationForm kind="github" info={info} sources={sources} />}
       </Group>
 
       <Group title="Database" footer="Leave both empty when the database is in the same project as the cluster: the app finds it by itself. When it lives in another Google Cloud project, add a key made in that project (the app then finds the instance there), or its connection name if the main key can already read that project. The database key is only used for Cloud SQL status and Postgres logs, is encrypted with your computer's keychain, and is removed when you sign out.">
@@ -337,6 +353,9 @@ export default function Settings() {
         </Row>
         <Row label="Warnings" detail="Degraded services, restarts, error spikes, new errors, failed deploys" icon="errors" tone="bg-orange">
           <Toggle checked={s.notifications.warning} onChange={(v) => set({ notifications: { warning: v } })} label="Warnings" />
+        </Row>
+        <Row label="New versions" detail="A release of one of the team’s repos (the Versions page)" icon="tag" tone="bg-accent">
+          <Toggle checked={s.notifications.releases !== false} onChange={(v) => set({ notifications: { releases: v } })} label="New versions" />
         </Row>
         <Row label="Informational" detail="Everything else" icon="info" tone="bg-gray">
           <Toggle checked={s.notifications.info} onChange={(v) => set({ notifications: { info: v } })} label="Informational" />

@@ -4,6 +4,17 @@ import Icon from './icons.jsx';
 import { cx, SEV_TONE, TONE } from './ui.jsx';
 import { dayTime, duration, compact, clock, short } from '../lib/format.js';
 
+/** Incidents as table rows (Export on Timeline and in the recap sheet). */
+export const INCIDENT_COLUMNS = [
+  { label: 'Started', get: (i) => new Date(i.start) },
+  { label: 'Ended', get: (i) => (i.end ? new Date(i.end) : '') },
+  { label: 'Lasted (min)', get: (i) => (i.end > i.start ? Math.round((i.end - i.start) / 6000) / 10 : '') },
+  { label: 'Severity', get: (i) => i.severity },
+  { label: 'Kind', get: (i) => i.kind },
+  { label: 'What happened', get: (i) => i.title },
+  { label: 'Details', get: (i) => i.detail || '' },
+];
+
 const KIND_ICON = { crash: 'bolt', http: 'traffic', event: 'events', node: 'infrastructure', errors: 'errors', database: 'database', frontend: 'frontends', edge: 'globe', deploy: 'rocket' };
 
 export function SummaryChips({ summary }) {

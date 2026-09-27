@@ -1,8 +1,42 @@
 import { useStore, inspect, navigate, invoke } from '../lib/store.js';
 import { ViewScroll } from '../components/Toolbar.jsx';
-import { Card, SectionTitle, Empty, Pill, cx, useNow, IconButton, SEV_TONE, STATE_TONE, StatusDot } from '../components/ui.jsx';
+import { Card, SectionTitle, Empty, Pill, cx, useNow, IconButton, SEV_TONE, STATE_TONE, StatusDot, AlertText } from '../components/ui.jsx';
 import Icon from '../components/icons.jsx';
 import { ago, dayTime, short, duration } from '../lib/format.js';
+import ExportButton from '../components/ExportButton.jsx';
+
+const ALERT_COLUMNS = [
+  { label: 'Opened', get: (a) => new Date(a.openedAt) },
+  { label: 'Severity', get: (a) => a.severity },
+  { label: 'What happened', get: (a) => a.title },
+  { label: 'Evidence', get: (a) => a.detail || '' },
+  { label: 'Impact', get: (a) => a.impact || '' },
+  { label: 'What to do', get: (a) => a.action || '' },
+  { label: 'Service', get: (a) => (a.service ? short(a.service) : '') },
+  { label: 'Acknowledged', get: (a) => (a.acked ? 'yes' : '') },
+];
+const POD_COLUMNS = [
+  { label: 'Pod', get: (p) => p.name },
+  { label: 'Service', get: (p) => short(p.service) },
+  { label: 'Status', get: (p) => p.status },
+  { label: 'Restarts', get: (p) => p.restarts },
+  { label: 'Last exit', get: (p) => (p.lastTermination ? `${p.lastTermination.reason || ''} (${p.lastTermination.exitCode ?? '—'})` : '') },
+  { label: 'Message', get: (p) => p.message || '' },
+];
+const CRASH_COLUMNS = [
+  { label: 'When', get: (c) => new Date(c.at) },
+  { label: 'Service', get: (c) => short(c.service) },
+  { label: 'Pod', get: (c) => c.pod },
+  { label: 'Container', get: (c) => c.container || '' },
+  { label: 'Reason', get: (c) => c.reason },
+  { label: 'Exit code', get: (c) => c.exitCode ?? '' },
+  { label: 'Restarts', get: (c) => c.restarts },
+  { label: 'Message', get: (c) => c.message || '' },
+];
+const DOWN_COLUMNS = [
+  { label: 'What is down', get: (d) => d.title },
+  { label: 'Details', get: (d) => d.detail || '' },
+];
 
 function DownCard({ title, detail, since, icon = 'x', onClick }) {
   return (
@@ -53,7 +87,7 @@ export default function Crashes() {
 
   return (
     <ViewScroll>
-      <SectionTitle title="Down right now" className="animate-rise" />
+      <SectionTitle title="Down right now" className="animate-rise" right={<ExportButton name="down-right-now" title="Down right now" columns={DOWN_COLUMNS} rows={down} />} />
       {down.length ? (
         <div className="grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-3 mb-8">
           {down.map((d) => (
@@ -74,15 +108,14 @@ export default function Crashes() {
 
       <div className="grid grid-cols-1 2xl:grid-cols-2 gap-6">
         <section className="animate-rise" style={{ animationDelay: '60ms' }}>
-          <SectionTitle title="Active alerts" subtitle="Open until the problem goes away" />
+          <SectionTitle title="Active alerts" subtitle="Open until the problem goes away" right={<ExportButton name="active-alerts" title="Active alerts" columns={ALERT_COLUMNS} rows={active} />} />
           <Card pad={false} className="p-1.5">
             {!active.length && <Empty compact title="No active alerts" message="Everything is behaving." />}
             {active.map((a) => (
               <div key={a.id} className={cx('group flex gap-3 p-2.5 rounded-[12px] hover:bg-fill-4', (a.acked || a.muted) && 'opacity-60')}>
                 <StatusDot tone={SEV_TONE[a.severity]} size={9} className="mt-1.5" pulse={a.severity === 'critical' && !a.acked} />
                 <button type="button" onClick={() => navigate(a.view || 'overview')} className="min-w-0 flex-1 text-left">
-                  <div className="text-headline font-semibold">{a.title}</div>
-                  {a.detail && <div className="text-callout text-label-2 mt-0.5 break-words">{a.detail}</div>}
+                  <AlertText a={a} />
                   <div className="text-subheadline text-label-3 mt-1">
                     since {ago(a.openedAt, now)}
                     {a.count > 1 ? ` · ${a.count}×` : ''}
@@ -100,7 +133,7 @@ export default function Crashes() {
         </section>
 
         <section className="animate-rise" style={{ animationDelay: '90ms' }}>
-          <SectionTitle title="Unhealthy pods" subtitle="Crash-looping, not ready, stuck or evicted" />
+          <SectionTitle title="Unhealthy pods" subtitle="Crash-looping, not ready, stuck or evicted" right={<ExportButton name="unhealthy-pods" title="Unhealthy pods" columns={POD_COLUMNS} rows={badPods} />} />
           <Card pad={false} className="overflow-hidden">
             {!badPods.length && <Empty compact title="All pods are healthy" message="Nothing is crash-looping, stuck or evicted." />}
             {badPods.map((p) => (
@@ -121,7 +154,7 @@ export default function Crashes() {
       </div>
 
       <section className="mt-8 animate-rise" style={{ animationDelay: '120ms' }}>
-        <SectionTitle title="Crashes in the last 24 hours" subtitle="Every container restart, with the reason and the logs from right before it" />
+        <SectionTitle title="Crashes in the last 24 hours" subtitle="Every container restart, with the reason and the logs from right before it" right={<ExportButton name="crashes" title="Crashes (24 h)" columns={CRASH_COLUMNS} rows={crashes} />} />
         <Card pad={false} className="@container overflow-hidden">
           <div className="grid grid-cols-[118px_minmax(90px,140px)_minmax(0,1fr)_150px_64px] @3xl:grid-cols-[150px_150px_minmax(0,1fr)_160px_70px_90px] gap-3 px-4 h-8 items-center text-subheadline font-semibold text-label-2 hairline-b">
             <span>When</span>

@@ -9,7 +9,6 @@ const arg = (key) => {
 
 contextBridge.exposeInMainWorld('pulse', {
   platform: arg('platform') || process.platform,
-  nativeMaterial: arg('material') === '1',
   version: arg('version'),
   invoke: (cmd, args) => ipcRenderer.invoke('pulse:invoke', { cmd, args }),
   on: (listener) => {

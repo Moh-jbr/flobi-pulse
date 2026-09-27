@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import { useStore, setState, navigate, invoke } from '../lib/store.js';
 import { Sheet, Button, Spinner, Empty } from './ui.jsx';
 import Icon from './icons.jsx';
-import { SummaryChips, TimelineStrip, IncidentList, RecapExtras } from './Recap.jsx';
+import { SummaryChips, TimelineStrip, IncidentList, RecapExtras, INCIDENT_COLUMNS } from './Recap.jsx';
 import { dayTime, duration } from '../lib/format.js';
+import ExportButton from './ExportButton.jsx';
 
 /** "While you were away" — opens by itself when there's a recap to show. */
 export default function RecapSheet() {
@@ -84,6 +85,7 @@ export default function RecapSheet() {
         )}
       </div>
       <div className="px-7 py-4 hairline-t flex items-center justify-between">
+        {recap?.incidents?.length > 0 && <ExportButton size="md" name="while-you-were-away" title="While you were away" columns={INCIDENT_COLUMNS} rows={recap.incidents} />}
         <Button variant="plain" icon="history" onClick={() => go('timeline')}>
           Open Timeline
         </Button>

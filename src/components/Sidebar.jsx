@@ -8,6 +8,7 @@ const GROUPS = [
     title: 'Monitor',
     items: [
       { id: 'overview', label: 'Overview', icon: 'overview' },
+      { id: 'recent', label: 'Recent issues', icon: 'bell' },
       { id: 'traffic', label: 'Live Traffic', icon: 'traffic' },
       { id: 'errors', label: 'Errors', icon: 'errors' },
       { id: 'crashes', label: 'Crashes & Down', icon: 'crashes' },
@@ -25,7 +26,10 @@ const GROUPS = [
   },
   {
     title: 'History',
-    items: [{ id: 'timeline', label: 'Timeline', icon: 'timeline' }],
+    items: [
+      { id: 'timeline', label: 'Timeline', icon: 'timeline' },
+      { id: 'versions', label: 'Versions', icon: 'tag' },
+    ],
   },
 ];
 
@@ -71,12 +75,18 @@ export default function Sidebar() {
   const sources = useStore((s) => s.sections.sources);
   const session = useStore((s) => s.sections.session);
   const info = useStore((s) => s.info);
+  const versions = useStore((s) => s.versions);
   const isMac = info?.platform === 'darwin';
 
   const crit = alerts?.counts?.critical || 0;
   const activeErrors = (errors?.backend || []).filter((g) => g.active).length + (errors?.frontend || []).filter((g) => g.active).length;
   const warnEvents = (events || []).filter((e) => e.type === 'Warning' && Date.now() - e.at < 60 * 60_000).length;
   const badges = {
+    recent: alerts?.active?.length ? { text: alerts.active.length, tone: 'plain' } : null,
+    versions: (() => {
+      const n = (versions?.feed || []).filter((r) => !r.baseline && r.publishedAt > (versions.viewedAt || 0) && versions.viewedAt).length;
+      return n ? { text: `${n} new`, tone: 'plain' } : null;
+    })(),
     traffic: traffic?.rpm ? { text: `${compact(traffic.rpm)}/m`, tone: 'plain' } : null,
     errors: activeErrors ? { text: activeErrors, tone: 'plain' } : null,
     crashes: crit ? { text: crit, tone: 'red' } : alerts?.counts?.warning ? { text: alerts.counts.warning, tone: 'orange' } : null,

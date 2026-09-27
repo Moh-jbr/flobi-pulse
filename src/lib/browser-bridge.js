@@ -3,6 +3,60 @@
 import { Pipeline } from '../../electron/core/engine/pipeline.mjs';
 import { DemoConnector } from '../../electron/core/engine/demo.mjs';
 import { Alarm } from '../../electron/core/engine/alarm.mjs';
+import { buildVersions } from '../../electron/core/engine/versions.mjs';
+
+// Demo releases for the Versions page, shaped like flobi-release's notes.
+function demoVersions(viewedAt) {
+  const H = 3600_000;
+  const now = Date.now();
+  const cmp = (repo, a, b) => `[compare](https://github.com/4ow4-Developers/${repo}/compare/${a}...${b})`;
+  const rel = (repo, tag, hoursAgo, body, author = 'github-actions (bot)') => ({ id: `${repo}@${tag}`, tag, name: tag, body, url: `https://github.com/4ow4-Developers/${repo}/releases/tag/${tag}`, prerelease: false, publishedAt: now - hoursAgo * H, author });
+  const manifest = {
+    owner: '4ow4-Developers',
+    repos: {
+      flobi_drive: { live: 'production', product: 'Drive', audience: 'user' },
+      'flobi-drive-back': { live: 'testing', product: 'Drive', audience: 'user' },
+      'flobi-gateway': { live: 'testing', product: 'Gateway', audience: 'internal' },
+      'flobi-artwork': { live: 'testing', product: 'Artwork', audience: 'user' },
+      'flobi-billing-back': { live: 'testing', product: 'Billing', audience: 'user' },
+    },
+  };
+  const releases = {
+    flobi_drive: [
+      rel('flobi_drive', 'v2.1.0', 0.3, `3 changes since v2.0.0 · ${cmp('flobi_drive', 'v2.0.0', 'v2.1.0')}
+
+### New
+
+- **upload:** resume large uploads after a dropped connection ([a1b2c3d](https://github.com/4ow4-Developers/flobi_drive/commit/a1b2c3d), dana)
+- **share:** copy a folder link with view-only access ([b2c3d4e](https://github.com/4ow4-Developers/flobi_drive/commit/b2c3d4e), sam)
+
+### Fixes
+
+- **preview:** PDFs with rotated pages show the right way up ([c3d4e5f](https://github.com/4ow4-Developers/flobi_drive/commit/c3d4e5f), dana)`),
+      rel('flobi_drive', 'v2.0.0', 26, `1 change since v1.1.0 · ${cmp('flobi_drive', 'v1.1.0', 'v2.0.0')}
+
+### Breaking changes
+
+- **api:** folder routes moved from \`/v1/folders\` to \`/v2/folders\` ([855145c](https://github.com/4ow4-Developers/flobi_drive/commit/855145c), dana)`),
+      rel('flobi_drive', 'v1.1.0', 30, `1 change since v1.0.2 · ${cmp('flobi_drive', 'v1.0.2', 'v1.1.0')}
+
+### New
+
+- **search:** find files by their contents ([d4e5f6a](https://github.com/4ow4-Developers/flobi_drive/commit/d4e5f6a), dana)`),
+      rel('flobi_drive', 'v1.0.0', 31, 'Versioning starts here. Every push to `production` from now on gets its own version and notes, worked out from the commit messages.', 'dana'),
+    ],
+    'flobi-drive-back': [
+      rel('flobi-drive-back', 'v1.0.1', 3, `1 change since v1.0.0 · ${cmp('flobi-drive-back', 'v1.0.0', 'v1.0.1')}
+
+### Fixes
+
+- **storage:** stats no longer count deleted files ([e5f6a7b](https://github.com/4ow4-Developers/flobi-drive-back/commit/e5f6a7b), dana)`),
+      rel('flobi-drive-back', 'v1.0.0', 31, 'Versioning starts here. Every push to `testing` from now on gets its own version and notes, worked out from the commit messages.', 'dana'),
+    ],
+    'flobi-gateway': [rel('flobi-gateway', 'v1.0.0', 5, 'Versioning starts here.', 'dana')],
+  };
+  return { status: 'ok', ...buildVersions(manifest, releases), checkedAt: now, error: null, owner: '4ow4-Developers', viewedAt };
+}
 
 export function createBrowserBridge() {
   const listeners = new Set();
@@ -25,6 +79,7 @@ export function createBrowserBridge() {
   let seq = 0;
   let cloudsqlInstances = [];
   let databaseKey = null;
+  let versionsViewedAt = Date.now() - 2 * 3600_000; // so the newest demo releases show as "New"
   // ?update=1 previews the "Update available" button with a simulated download.
   let update = params.get('update')
     ? { status: 'available', current: '1.0.0', version: '1.0.1', size: 98_300_000, releasesUrl: 'https://github.com/Moh-jbr/flobi-pulse/releases/latest' }
@@ -58,13 +113,13 @@ export function createBrowserBridge() {
   const info = () => ({
     platform,
     version: '1.0.0',
-    nativeMaterial: false,
     mode,
     identity: mode === 'demo' ? { kind: 'demo', email: 'demo@flobi.ai', name: 'Demo mode' } : null,
     team: { projectId: 'flobi-prod-2026', namespace: 'flobi', clusterName: 'flobi-cluster', clusterLocation: 'europe-west1', clusterEndpointInConfig: false },
-    integrations: { sentry: { host: 'sentry.io', org: 'flobi', hasToken: true }, cloudflare: { accountId: '', zones: ['flobi.ai'], hasToken: true }, cloudsql: { instances: cloudsqlInstances, fromTeam: [] }, databaseKey },
+    integrations: { sentry: { host: 'sentry.io', org: 'flobi', hasToken: true }, cloudflare: { accountId: '', zones: ['flobi.ai'], hasToken: true }, cloudsql: { instances: cloudsqlInstances, fromTeam: [] }, databaseKey, github: { hasToken: true, owner: '4ow4-Developers' } },
     uptime: [],
     update,
+    versions: demoVersions(versionsViewedAt),
     settings,
     secretsEncrypted: true,
   });
@@ -132,7 +187,12 @@ export function createBrowserBridge() {
     'uptime:set': async () => info(),
     'logs:follow': async (args) => {
       const id = `f${++seq}`;
-      follows.set(id, connector.followLogs(args, (lines) => send({ t: 'follow', id, lines }), (status, message) => send({ t: 'follow', id, status, message })));
+      // ?logs=silent|hang|fail previews the bad cases: connected but quiet, never answers, fails.
+      const mode = params.get('logs');
+      if (mode === 'silent') setTimeout(() => send({ t: 'follow', id, status: 'streaming' }), 300);
+      else if (mode === 'hang') setTimeout(() => send({ t: 'follow', id, status: 'opening' }), 300);
+      else if (mode === 'fail') setTimeout(() => send({ t: 'follow', id, status: 'unreachable', message: "Kubernetes didn't start sending this pod's logs within 15 s." }), 1000);
+      else follows.set(id, connector.followLogs(args, (lines) => send({ t: 'follow', id, lines }), (status, message) => send({ t: 'follow', id, status, message })));
       return { id };
     },
     'logs:unfollow': async ({ id }) => {
@@ -141,7 +201,8 @@ export function createBrowserBridge() {
       return true;
     },
     'logs:previous': async (a) => connector.previousLogs(a),
-    'logs:query': async (a) => connector.queryLogs(a),
+    'logs:query': async (a) => (params.get('logs') === 'silent' ? (await new Promise((r) => setTimeout(r, 400)), []) : connector.queryLogs(a)),
+    'request:logs': async (a) => connector.requestLogs(a),
     'recap:get': async (a) => connector.recap({ since: a.since, until: a.until || Date.now() }),
     'usage:get': async (a) => connector.usage(a),
     'alerts:ack': async ({ id }) => (pipeline.alerts.ack(id), alarm.check()),
@@ -161,6 +222,12 @@ export function createBrowserBridge() {
     'live:retry': async () => true,
     'open:external': async ({ url }) => window.open(url, '_blank', 'noopener'),
     'clipboard:write': async ({ text }) => navigator.clipboard?.writeText(text),
+    'export:save': async ({ name, data }) => {
+      const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(new Blob([data])), download: name });
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
+      return { saved: name };
+    },
     'edit:do': async ({ action }) => document.execCommand(action),
     'notify:test': async () => {
       if (settings.notifications.sound) send({ t: 'sound', kind: 'warning', volume: settings.notifications.volume ?? 0.8 });
@@ -168,6 +235,12 @@ export function createBrowserBridge() {
     },
     'guard:denied': async () => [],
     'update:check': async () => update,
+    'versions:refresh': async () => demoVersions(versionsViewedAt),
+    'versions:seen': async () => {
+      versionsViewedAt = Date.now();
+      send({ t: 'versions', versions: demoVersions(versionsViewedAt) });
+      return demoVersions(versionsViewedAt);
+    },
     'update:install': async () => {
       if (update.status !== 'available' && update.status !== 'error') return update;
       setUpdate({ status: 'downloading', progress: 0 });
@@ -184,7 +257,6 @@ export function createBrowserBridge() {
 
   return {
     platform,
-    nativeMaterial: false,
     version: '1.0.0',
     preview: true,
     invoke: async (cmd, args) => {

@@ -4,6 +4,17 @@ import { ViewScroll } from '../components/Toolbar.jsx';
 import { Card, Segmented, SearchField, Empty, cx, useNow, Pill } from '../components/ui.jsx';
 import { ago } from '../lib/format.js';
 import Select from '../components/Select.jsx';
+import ExportButton from '../components/ExportButton.jsx';
+
+const EVENT_COLUMNS = [
+  { label: 'When', get: (e) => new Date(e.at) },
+  { label: 'Type', get: (e) => e.type },
+  { label: 'Reason', get: (e) => e.reason },
+  { label: 'Object', get: (e) => `${e.kind || ''} ${e.name || ''}`.trim() },
+  { label: 'Message', get: (e) => e.message || '' },
+  { label: 'What it means', get: (e) => (e.type === 'Warning' && EXPLAIN[e.reason]) || '' },
+  { label: 'Count', get: (e) => e.count || 1 },
+];
 
 const EXPLAIN = {
   BackOff: 'A container keeps crashing, so Kubernetes waits longer before each restart.',
@@ -49,8 +60,9 @@ export default function Events() {
           ]}
         />
         <Select size="md" value={kind} onChange={setKind} icon="stack" ariaLabel="Object type" options={[{ value: 'all', label: 'All objects' }, ...kinds.map((k) => ({ value: k, label: k, meta: events.filter((e) => e.kind === k).length }))]} />
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-2">
           <SearchField value={q} onChange={setQ} placeholder="Reason, object, message…" width={260} />
+          <ExportButton name="kubernetes-events" title="Kubernetes events" columns={EVENT_COLUMNS} rows={list} />
         </div>
       </div>
       <Card pad={false} className="overflow-hidden animate-rise" style={{ animationDelay: '60ms' }}>
