@@ -15,12 +15,18 @@ export const RATE_LIMITED_MESSAGE =
   'Google is limiting log reads for this project right now (every Flobi Pulse window on the team shares 60 reads a minute). Wait a minute, then try again.';
 
 export class LoggingClient {
-  constructor({ projectId, getToken, invalidateToken, minIntervalMs = 1500, request = json, retryMs = 4_000, backoffMs = 15_000 }) {
+  /**
+   * invalidateToken (optional): on HTTP 401 a read is retried once with a fresh token.
+   * request, openStream and tailTiming are only replaced by tests.
+   */
+  constructor({ projectId, getToken, invalidateToken, minIntervalMs = 1500, request = json, retryMs = 4_000, backoffMs = 15_000, openStream: open = openStream, tailTiming = {} }) {
     this.projectId = projectId;
     this.getToken = getToken;
     this.invalidateToken = invalidateToken;
     this.minIntervalMs = minIntervalMs;
     this.request = request;
+    this.openStream = open;
+    this.tailTiming = { backoffMs: 500, maxBackoffMs: 30_000, healthyMs: 30_000, ...tailTiming };
     this.retryMs = retryMs;
     this.backoffMs = backoffMs;
     this.lastCall = 0;
@@ -85,23 +91,49 @@ export class LoggingClient {
   }
 
   async _call(body) {
-    return this.request({
-      method: 'POST',
-      url: 'https://logging.googleapis.com/v2/entries:list',
-      headers: { authorization: `Bearer ${await this.getToken()}`, 'content-type': 'application/json' },
-      body,
-      timeoutMs: 60_000,
-    });
+    const send = (token) =>
+      this.request({
+        method: 'POST',
+        url: 'https://logging.googleapis.com/v2/entries:list',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body,
+        timeoutMs: 60_000,
+      });
+    const token = await this.getToken();
+    try {
+      return await send(token);
+    } catch (e) {
+      // A rejected (revoked, rotated) token: get a fresh one and try once more.
+      if (e?.status !== 401 || !this.invalidateToken) throw e;
+      this.invalidateToken(token);
+      return send(await this.getToken());
+    }
   }
 
-  /** Pages through results up to `max` entries. */
-  async listAll({ filter, orderBy = 'timestamp desc', max = 2000, pageSize = 1000, project, priority }) {
+  /**
+   * Pages through results up to `max` entries, within a budget: Google answers a slow
+   * search with empty pages that still carry a nextPageToken, so an unbounded loop
+   * could page for minutes on the reads every teammate shares. Stops after 3 empty
+   * pages in a row, `maxPages` pages or `maxMs`, and returns what it found; the array
+   * then has `truncated: true` (a non-enumerable property, so it's still a plain list).
+   */
+  async listAll({ filter, orderBy = 'timestamp desc', max = 2000, pageSize = 1000, project, priority, maxPages = 20, maxMs = priority === 'interactive' ? 30_000 : 60_000 }) {
+    const started = Date.now();
     const out = [];
     let pageToken;
+    let pages = 0;
+    let empty = 0;
     do {
       const res = await this.list({ filter, orderBy, pageSize: Math.min(pageSize, max - out.length), pageToken, project, priority });
-      out.push(...(res?.entries || []));
+      const entries = res?.entries || [];
+      out.push(...entries);
+      pages++;
+      empty = entries.length ? 0 : empty + 1;
       pageToken = res?.nextPageToken;
+      if (pageToken && out.length < max && (empty >= 3 || pages >= maxPages || Date.now() - started >= maxMs)) {
+        Object.defineProperty(out, 'truncated', { value: true });
+        break;
+      }
     } while (pageToken && out.length < max);
     return out;
   }
@@ -111,6 +143,7 @@ export class LoggingClient {
    * onState(state, message): 'connecting' | 'streaming' | 'unavailable' | 'error' | 'stopped'
    */
   tail({ filter, onEntries, onSuppressed, onState }) {
+    const { backoffMs, maxBackoffMs, healthyMs } = this.tailTiming;
     let stopped = false;
     let handle = null;
     let wake = null;
@@ -124,6 +157,9 @@ export class LoggingClient {
       });
 
     const loop = async () => {
+      // Reconnects in a row that didn't give a working stream. Merely opening doesn't
+      // reset it (a server that accepts and then fails would be hit twice a second);
+      // a stream that delivered something or stayed up healthyMs does.
       let attempt = 0;
       while (!stopped) {
         onState('connecting');
@@ -131,36 +167,54 @@ export class LoggingClient {
         try {
           token = await this.getToken();
         } catch (e) {
+          if (stopped) break;
           onState('error', e.message);
           await nap(30_000);
           continue;
         }
-        const result = await new Promise((resolve) => {
-          let gotData = false;
-          handle = openStream({
-            origin: 'https://logging.googleapis.com',
-            path: '/google.logging.v2.LoggingServiceV2/TailLogEntries',
-            headers: {
-              authorization: `Bearer ${token}`,
-              'x-goog-request-params': `resource_names=${encodeURIComponent(`projects/${this.projectId}`)}`,
-            },
-            request: encodeTailRequest({ resourceNames: [`projects/${this.projectId}`], filter }),
-            onOpen: () => {
-              attempt = 0;
-              onState('streaming');
-            },
-            onMessage: (buf) => {
-              gotData = true;
-              const { entries, suppression } = decodeTailResponse(buf);
-              if (entries.length) onEntries(entries);
-              if (suppression.length) onSuppressed?.(suppression);
-            },
-            onEnd: (err) => resolve({ err, gotData }),
+        // Stopped while the token was on its way (a connector restart after sleep): don't
+        // open a stream, it would hold one of the project's 10 live-tail slots for nothing.
+        if (stopped) break;
+        const resourceNames = [`projects/${this.projectId}`];
+        let openedAt = 0;
+        let messages = 0;
+        let err;
+        try {
+          err = await new Promise((resolve) => {
+            handle = this.openStream({
+              origin: 'https://logging.googleapis.com',
+              path: '/google.logging.v2.LoggingServiceV2/TailLogEntries',
+              headers: {
+                authorization: `Bearer ${token}`,
+                'x-goog-request-params': `resource_names=${encodeURIComponent(resourceNames[0])}`,
+              },
+              request: encodeTailRequest({ resourceNames, filter }),
+              onOpen: () => {
+                if (stopped) return;
+                openedAt = Date.now();
+                onState('streaming');
+              },
+              onMessage: (buf) => {
+                if (stopped) return;
+                messages++;
+                const { entries, suppression } = decodeTailResponse(buf);
+                if (entries.length) onEntries(entries);
+                if (suppression.length) onSuppressed?.(suppression);
+              },
+              onEnd: resolve,
+            });
           });
-        });
+        } catch (e) {
+          // Refused before anything was sent (the read-only guard): retrying soon won't help.
+          handle = null;
+          if (stopped) break;
+          onState('error', e.message);
+          await nap(5 * 60_000);
+          continue;
+        }
         handle = null;
         if (stopped) break;
-        const { err } = result;
+        if (messages || (openedAt && Date.now() - openedAt >= healthyMs)) attempt = 0;
         if (err.code === GRPC_CODE.RESOURCE_EXHAUSTED) {
           onState('unavailable', TAIL_UNAVAILABLE_MESSAGE);
           await nap(60_000);
@@ -169,14 +223,14 @@ export class LoggingClient {
           await nap(5 * 60_000);
         } else if (err.code === GRPC_CODE.UNAUTHENTICATED) {
           onState('connecting', 'Refreshing sign-in…');
-          this.invalidateToken?.();
+          this.invalidateToken?.(token);
           await nap(attempt++ ? 5_000 : 250);
         } else if (err.code === GRPC_CODE.INVALID_ARGUMENT) {
           onState('error', `Google rejected the live log filter: ${err.message}`);
           await nap(5 * 60_000);
         } else {
-          // Server-side end (Google closes tails periodically) or network blip.
-          await nap(Math.min(30_000, 500 * 2 ** attempt++));
+          // Server-side end (Google closes tails periodically), a dead connection or a blip.
+          await nap(Math.min(maxBackoffMs, backoffMs * 2 ** attempt++));
         }
       }
       onState('stopped');

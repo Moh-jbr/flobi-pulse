@@ -8,7 +8,7 @@ import { Card, Segmented, SearchField, Toggle, Button, Empty, Pill, Spinner, cx,
 import Icon from '../components/icons.jsx';
 import Markdown from '../components/Markdown.jsx';
 import ExportButton from '../components/ExportButton.jsx';
-import { ago, clock } from '../lib/format.js';
+import { ago, clock, dayLong } from '../lib/format.js';
 
 const BUMP = {
   major: { label: 'Major', tone: 'red', hint: 'Something that used to work changed: others may need to change too.' },
@@ -29,13 +29,6 @@ const COLUMNS = [
   { label: 'Changelog', get: (r) => r.body || '' },
   { label: 'Link', get: (r) => r.url || '' },
 ];
-
-function dayLabel(ts, now) {
-  const d = new Date(ts);
-  if (d.toDateString() === new Date(now).toDateString()) return 'Today';
-  if (d.toDateString() === new Date(now - 86_400_000).toDateString()) return 'Yesterday';
-  return d.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
-}
 
 function VersionPill({ r }) {
   const b = BUMP[r.bump] || BUMP.other;
@@ -95,6 +88,7 @@ function Release({ r, isNew, now, startOpen, inRepo }) {
 }
 
 function ConnectGitHub({ owner }) {
+  const encrypted = useStore((s) => s.info?.secretsEncrypted);
   return (
     <Card className="max-w-[720px]">
       <div className="flex items-start gap-3">
@@ -103,7 +97,9 @@ function ConnectGitHub({ owner }) {
         </div>
         <div className="min-w-0 flex-1">
           <div className="text-headline font-semibold">Connect GitHub to see every release</div>
-          <div className="text-callout text-label-2 mt-1">The repos are private, so Flobi Pulse needs your own read-only GitHub token. It stays encrypted on this computer and can only read release notes.</div>
+          <div className="text-callout text-label-2 mt-1">
+            The repos are private, so Flobi Pulse needs your own read-only GitHub token. {encrypted ? 'It stays encrypted on this computer' : 'It stays on this computer (this system has no keychain to encrypt it with)'} and can only read release notes.
+          </div>
           <ol className="list-decimal pl-5 mt-3 text-callout text-label-2 flex flex-col gap-1">
             <li>GitHub → Settings → Developer settings → Personal access tokens → <b className="text-label">Fine-grained tokens</b> → Generate new token.</li>
             <li>
@@ -149,7 +145,7 @@ export default function Versions() {
   const days = useMemo(() => {
     const out = [];
     for (const r of feed) {
-      const label = dayLabel(r.publishedAt, now);
+      const label = dayLong(r.publishedAt);
       if (out.at(-1)?.label !== label) out.push({ label, items: [] });
       out.at(-1).items.push(r);
     }
@@ -161,6 +157,22 @@ export default function Versions() {
 
   const versioned = (v.repos || []).filter((r) => r.latest).length;
   const total = (v.repos || []).filter((r) => !r.skip).length;
+  // "Include internal" off hides the infrastructure repos, so it counts as a filter too.
+  const filtering = q.trim() !== '' || !internal;
+  const clearFilters = () => {
+    setQ('');
+    setInternal(true);
+  };
+  const nothingShown = (hidden, what) =>
+    hidden > 0 && filtering ? (
+      <Card>
+        <Empty icon="tag" tone="gray" title="Nothing matches these filters" message={`Clear them to see every ${what}, internal ones included.`} action={<Button onClick={clearFilters}>Clear filters</Button>} />
+      </Card>
+    ) : (
+      <Card>
+        <Empty icon="tag" tone="gray" title="No releases yet" message="Releases appear here as soon as a repo pushes to its live branch." />
+      </Card>
+    );
   return (
     <ViewScroll inner="max-w-[1100px]">
       <div className="flex items-center gap-2 flex-wrap mb-4 animate-rise">
@@ -212,22 +224,24 @@ export default function Versions() {
             </section>
           ))
         ) : v.status === 'ok' ? (
-          <Card>
-            <Empty icon="tag" tone="gray" title={q || !internal ? 'No releases match' : 'No releases yet'} message={internal ? 'Releases appear here as soon as a repo pushes to its live branch.' : 'Turn on “Include internal” to see infrastructure repos too.'} />
-          </Card>
+          nothingShown((v.feed || []).length, 'release')
         ) : null)}
 
       {view === 'products' &&
-        products.map(([product, repos]) => (
-          <section key={product} className="mb-5 animate-rise">
-            <h2 className="text-headline font-semibold text-label-2 px-1 mb-2">{product}</h2>
-            <Card pad={false} className="overflow-hidden divide-y divide-separator">
-              {repos.map((r) => (
-                <RepoRow key={r.name} repo={r} now={now} />
-              ))}
-            </Card>
-          </section>
-        ))}
+        (products.length
+          ? products.map(([product, repos]) => (
+              <section key={product} className="mb-5 animate-rise">
+                <h2 className="text-headline font-semibold text-label-2 px-1 mb-2">{product}</h2>
+                <Card pad={false} className="overflow-hidden divide-y divide-separator">
+                  {repos.map((r) => (
+                    <RepoRow key={r.name} repo={r} now={now} />
+                  ))}
+                </Card>
+              </section>
+            ))
+          : v.status === 'ok'
+            ? nothingShown((v.repos || []).length, 'repo')
+            : null)}
     </ViewScroll>
   );
 }

@@ -7,19 +7,28 @@ import { AlertBook, evaluateConditions, certificateImpact } from './alerts.mjs';
 import { crashCopy } from './alert-copy.mjs';
 import { TrafficStats } from './traffic.mjs';
 import { shortName, DB_CONN_ERROR } from './log-parse.mjs';
+import { mergeCrashRecords, crashCovered, pastIssue, sameProblem, mergeEventRows, PAST_DAYS } from './backfill.mjs';
 
 const MIN = 60_000;
+const PAST_MS = PAST_DAYS * 24 * 60 * MIN; // crashes, events and errors reach this far back
 const K8S_KEYS = ['pods', 'deployments', 'statefulsets', 'services', 'hpas', 'scaledobjects', 'nodes', 'jobs', 'cronjobs', 'ingresses', 'certificates', 'pdbs'];
+// Source statuses that aren't trouble (setSource).
+const WORKING = new Set(['ok', 'streaming', 'connecting', 'off']);
 
 export class Pipeline {
   /**
-   * @param {{namespace:string, emit:(type:string, payload:any)=>void, notify?:(alert:object, meta:object)=>void, knownErrors?:Record<string,number>, now?:()=>number, mode:'live'|'demo'}} o
+   * @param {{namespace:string, emit:(type:string, payload:any)=>void, notify?:(alert:object, meta:{escalated:boolean, muted:boolean, related:object[]})=>void, knownErrors?:Record<string,number>, legacyKnownErrors?:Record<string,number>|null, now?:()=>number, mode:'live'|'demo', onTrouble?:()=>void}} o
+   *   notify: `related` are the other alerts sent in the same notification (one incident, one notification).
+   *   onTrouble: a data source just failed: main checks whether this computer went offline.
    */
-  constructor({ namespace, emit, notify, knownErrors = {}, now = () => Date.now(), mode = 'live', graceMs = 45_000 }) {
+  constructor({ namespace, emit, notify, knownErrors = {}, legacyKnownErrors = null, now = () => Date.now(), mode = 'live', graceMs = 45_000, onTrouble = () => {} }) {
     this.graceMs = graceMs;
     this.namespace = namespace;
     this.emit = emit;
     this.notify = notify;
+    this.onTrouble = onTrouble;
+    // This computer's connection (setConnectivity): { since } while it's offline, else null.
+    this.offline = null;
     this.now = now;
     this.mode = mode;
     this.raw = Object.fromEntries(K8S_KEYS.map((k) => [k, []]));
@@ -30,20 +39,33 @@ export class Pipeline {
     this.restartLedger = new Map();
     this.lastDesired = new Map(); // workload → desired replicas at the previous rebuild
     this.stoppedAt = new Map(); // workload → when someone scaled it to 0 by hand
+    this.startingAt = new Map(); // workload → when it was scaled up from 0
     this.prevRestarts = new Map();
     this.crashes = [];
     this.events = [];
-    this.firstRun = Object.keys(knownErrors).length === 0;
-    this.errors = new ErrorBook({ known: knownErrors });
+    this.errors = new ErrorBook({ known: knownErrors, legacyKnown: legacyKnownErrors, now });
+    // The past week, rebuilt from the logs on start (backfill.mjs): what it covers so far, and
+    // what it found that the live sources don't have.
+    this.backfill = { status: 'off', days: PAST_DAYS, since: null, until: null, notes: [], error: null };
+    this.pastCrashes = []; // container crashes from Kubernetes events in the logs
+    this.pastEvents = new Map(); // event id → row, from the logs (Kubernetes keeps an hour)
+    this.logsBefore = null; // { since, until, lines }: the Logs page's lines from before the live stream
+    this.pastSlices = new Set(); // the slices of it added so far ("from-until")
+    this.heldNewErrors = []; // "new error" alerts waiting for the past week to finish loading
     this.traffic = new TrafficStats({ now: now() });
     this.uptime = new Map();
     this.database = { instances: [], operations: [], errors: [], status: 'off', message: null };
     this.sqlSeenInLogs = new Set(); // Cloud SQL connection names seen in Postgres logs
     this.dbConnIssues = []; // app log lines that look like "can't reach the database"
     this.usageHistory = new Map();
+    this.billingStorage = null; // the Costs page's billing export vs BigQuery's free storage (setBillingStorage)
+    this._billingStorageKey = null;
+    this.billingCredits = []; // prepaid balances below their alert amount (setBillingCredits)
+    this._billingCreditsKey = '';
     this.dnsInfo = null; // domain → { none, cloudflare } for certificates Google couldn't issue // pod → { service, points: [{ t, cpu, mem }] } from metrics-server
     this.cloudRun = [];
     this.sentry = { status: 'off', issues: [], projects: [], message: null };
+    this.sentrySubstatus = new Map(); // issue id → { substatus, at }: its state when last polled
     this.cloudflare = { status: 'off', zones: [], pages: [], hostErrors: [], message: null };
     this.sources = {};
     this.session = {};
@@ -58,6 +80,7 @@ export class Pipeline {
     this.initialPhase = true;
     this.initialQueue = [];
     this.notifyBuckets = new Map();
+    this.unsent = new Set(); // new alerts whose condition went away before their notification went out
     this.lastErrorsVersion = -1;
     this.lastAlertsVersion = -1;
 
@@ -78,6 +101,7 @@ export class Pipeline {
     clearTimeout(this.graceTimer);
     for (const b of this.notifyBuckets.values()) clearTimeout(b.timer);
     this.notifyBuckets.clear();
+    this.unsent.clear();
     // Late callbacks from sources that are still winding down go nowhere.
     this.emit = () => {};
     this.notify = () => {};
@@ -95,6 +119,25 @@ export class Pipeline {
     this.sources[key] = { status, message, at: this.now(), ...extra };
     if (key === 'live' && status === 'streaming' && !this.liveSince) this.liveSince = this.now();
     this.dirty.add('sources');
+    // A source that just stopped working: first make sure it isn't this computer that went offline.
+    if (prev?.status !== status && !WORKING.has(status) && !this.offline) {
+      try {
+        this.onTrouble();
+      } catch {}
+    }
+  }
+
+  /**
+   * This computer's connection (net/connectivity.mjs). While it's offline nothing is called down
+   * and no alert opens or closes (what can't be read isn't news): the page says it's offline and
+   * shows what it last saw. Back online, it all carries on.
+   */
+  setConnectivity({ online = true, since = null } = {}) {
+    const offline = online === false ? { since: since ?? this.now() } : null;
+    if (!!offline === !!this.offline) return;
+    this.offline = offline;
+    for (const k of ['health', 'sources', 'uptime', 'alerts']) this.dirty.add(k);
+    this.scheduleRebuild();
   }
 
   setK8s(key, items) {
@@ -193,7 +236,8 @@ export class Pipeline {
   setUptime(target, result) {
     const prev = this.uptime.get(target.id) || { ...target, history: [], failStreak: 0 };
     const history = [...prev.history, { t: result.at, state: result.state, ms: result.ms, status: result.status ?? null }].slice(-60);
-    const failStreak = result.state === 'down' ? prev.failStreak + 1 : 0;
+    // 'offline': this computer couldn't reach anything, so it says nothing about the site.
+    const failStreak = result.state === 'down' ? prev.failStreak + 1 : result.state === 'offline' ? prev.failStreak : 0;
     this.uptime.set(target.id, { ...target, ...result, history, failStreak, error: result.error || null });
     this.dirty.add('uptime');
     this.dirty.add('certificates');
@@ -205,6 +249,25 @@ export class Pipeline {
     for (const id of this.uptime.keys()) if (!ids.has(id)) this.uptime.delete(id);
     for (const t of targets) if (!this.uptime.has(t.id)) this.uptime.set(t.id, { ...t, state: 'pending', history: [], failStreak: 0 });
     this.dirty.add('uptime');
+  }
+
+  /** How much of BigQuery's free storage the Costs page's billing export uses (engine/costs.mjs), or null. */
+  setBillingStorage(storage) {
+    const key = storage ? `${storage.level}:${storage.bytes}:${storage.expirationDays}:${storage.keepDays}` : null;
+    if (key === this._billingStorageKey) return;
+    this._billingStorageKey = key;
+    this.billingStorage = storage || null;
+    this.scheduleRebuild();
+  }
+
+  /** The prepaid balances (OpenRouter, fal) below the amount set to alert at (engine/costs.mjs, lowCredits). */
+  setBillingCredits(list) {
+    const next = Array.isArray(list) ? list : [];
+    const key = next.map((b) => `${b.id}:${Math.round(b.amount * 100)}:${b.below}:${b.daysLeft}`).join('|');
+    if (key === this._billingCreditsKey) return;
+    this._billingCreditsKey = key;
+    this.billingCredits = next;
+    this.scheduleRebuild();
   }
 
   setDnsInfo(map) {
@@ -233,13 +296,23 @@ export class Pipeline {
         if (!before.has(i.id) && this.now() - i.firstSeen < 30 * MIN) {
           const who = i.users ? `${i.users} user${i.users === 1 ? '' : 's'} hit it so far` : 'Users are hitting it in the browser';
           this.alerts.happen({ key: `sentry:${i.id}`, kind: 'frontend', severity: i.level === 'fatal' ? 'critical' : 'warning', title: `New error in the ${i.project} app: ${String(i.title).slice(0, 90)}`, detail: `${i.title}${i.culprit ? ` · in ${i.culprit}` : ''}`, impact: `${who}${i.unhandled ? ', and it crashes the page' : ''}.`, action: 'Open it for the stack trace, or view it in Sentry.', view: { to: 'errors', filter: { source: 'frontend' }, id: `sentry:${i.id}` } });
-        } else if (i.substatus === 'regressed' || i.substatus === 'escalating') {
+        } else if ((i.substatus === 'regressed' || i.substatus === 'escalating') && this.sentrySubstatus.get(i.id)?.substatus !== i.substatus) {
+          // Only the change into regressed/escalating is news: Sentry keeps an
+          // issue in that state for days, and it's polled every minute.
           const regressed = i.substatus === 'regressed';
           this.alerts.happen({ key: `sentry-${i.substatus}:${i.id}`, kind: 'frontend', severity: 'warning', title: regressed ? `A fixed error is back in the ${i.project} app` : `An error in the ${i.project} app is happening much more often`, detail: i.title, impact: regressed ? 'It was marked as fixed, so the fix was undone or didn’t cover every case.' : 'More users are hitting it than usual.', action: 'Open it to see when it came back and on which pages.', view: { to: 'errors', filter: { source: 'frontend' }, id: `sentry:${i.id}` } });
         }
       }
     }
-    if (patch.issues) this.sentry.primed = true;
+    if (patch.issues) {
+      // The first poll only primes this: what was already regressed when the app opened isn't new.
+      // Merged, not replaced: an issue that drops off the polled page and comes back still
+      // regressed isn't news either. Issues unseen for a week are forgotten.
+      const now = this.now();
+      for (const i of patch.issues) this.sentrySubstatus.set(i.id, { substatus: i.substatus, at: now });
+      for (const [id, v] of this.sentrySubstatus) if (now - v.at > 7 * 24 * 60 * MIN) this.sentrySubstatus.delete(id);
+      this.sentry.primed = true;
+    }
     this.dirty.add('sentry');
     this.dirty.add('errors');
   }
@@ -276,8 +349,8 @@ export class Pipeline {
         const lt = c.lastState?.terminated;
         const at = lt?.finishedAt ? Date.parse(lt.finishedAt) : now;
         if (prev === undefined) {
-          // Seed the crash list with what happened before we connected (last 24h).
-          if (lt && now - at < 24 * 60 * MIN) this._recordCrash(p, c, at, false);
+          // Seed the crash list with what happened before we connected (the last crash of each container).
+          if (lt && now - at < PAST_MS) this._recordCrash(p, c, at, false);
           if (lt && now - at < 15 * MIN) this.restartLedger.set(key, [at]);
           continue;
         }
@@ -312,11 +385,13 @@ export class Pipeline {
       restarts: c.restartCount || 0,
     };
     this.crashes.unshift(crash);
-    this.crashes = this.crashes.filter((x) => this.now() - x.at < 24 * 60 * MIN).sort((a, b) => b.at - a.at).slice(0, 300);
+    this.crashes = this.crashes.filter((x) => this.now() - x.at < PAST_MS).sort((a, b) => b.at - a.at).slice(0, 300);
     this.dirty.add('crashes');
     if (live) {
+      // One alert per container, not per restart: a crash loop counts up on it
+      // (and stays silenced once acknowledged) instead of notifying every restart.
       this.alerts.happen({
-        key: `crash:${crash.id}`,
+        key: `crash:${crash.pod}/${crash.container}`,
         kind: 'crash',
         service,
         severity: crash.reason === 'OOMKilled' ? 'critical' : 'warning',
@@ -329,9 +404,20 @@ export class Pipeline {
 
   _onNewErrorGroup(g) {
     this.dirty.add('errors');
-    // Don't flood on the very first run or right after connecting.
-    if (this.firstRun || this.initialPhase) return;
-    if (!this.liveSince || this.now() - this.liveSince < 3 * MIN) return;
+    const now = this.now();
+    // Don't flood while a first run learns what's usual (the ErrorBook's
+    // baseline), or right after connecting.
+    if (this.initialPhase || this.errors.inBaseline?.(now)) return;
+    if (!this.liveSince || now - this.liveSince < 3 * MIN) return;
+    // The past week is still loading and may well have it: wait for it (see _releaseNewErrors).
+    if (this.backfill.status === 'loading') {
+      this.heldNewErrors.push({ g, at: now, first: g.firstEverSeen });
+      return;
+    }
+    this._newErrorAlert(g);
+  }
+
+  _newErrorAlert(g) {
     this.alerts.happen({
       key: `newerr:${g.id}`,
       kind: 'errors',
@@ -347,32 +433,60 @@ export class Pipeline {
 
   _onAlertOpen(alert, meta) {
     this.dirty.add('alerts');
+    // Part of a problem someone silenced (AlertBook.silence): it shows in the app, and that's all.
+    if (meta?.silenced) return;
     if (this.initialPhase) {
       this.initialQueue.push(alert);
       return;
     }
     // One incident usually opens several alerts at once (pod crash-looping +
-    // service degraded + OOM). Wait a moment and send one notification per service.
+    // service degraded + OOM). Wait a moment and send one notification per service;
+    // the others ride along as `related` so the siren covers every one of them.
     const key = alert.service || alert.key;
-    const bucket = this.notifyBuckets.get(key) || { alerts: [], meta, timer: null };
-    bucket.alerts.push(alert);
-    bucket.meta = { ...bucket.meta, muted: bucket.meta.muted && meta.muted };
-    if (!bucket.timer) {
-      bucket.timer = setTimeout(() => {
-        this.notifyBuckets.delete(key);
-        const order = { critical: 3, warning: 2, info: 1 };
-        const sorted = bucket.alerts.sort((a, b) => order[b.severity] - order[a.severity] || (a.kind === 'crash' ? -1 : 0));
-        const lead = sorted[0];
-        const extra = sorted.length - 1;
-        this.notify?.(extra ? { ...lead, detail: `${lead.detail || ''}${lead.detail ? ' · ' : ''}+${extra} related alert${extra > 1 ? 's' : ''}` } : lead, bucket.meta);
-      }, 2500);
-    }
+    const bucket = this.notifyBuckets.get(key) || { alerts: [], escalated: false, timer: null };
+    if (!bucket.alerts.includes(alert)) bucket.alerts.push(alert);
+    bucket.escalated ||= !!meta?.escalated;
+    if (!bucket.timer) bucket.timer = setTimeout(() => this._sendBucket(key), 2500);
     this.notifyBuckets.set(key, bucket);
+  }
+
+  _sendBucket(key) {
+    const bucket = this.notifyBuckets.get(key);
+    this.notifyBuckets.delete(key);
+    if (!bucket) return;
+    // An alert whose condition went away meanwhile (it's on hold, clearing) waits:
+    // it's announced only if it comes back.
+    const open = bucket.alerts.filter((a) => this.alerts.active.get(a.key) === a);
+    for (const a of open) if (a.clearingSince != null) this.unsent.add(a);
+    const due = open.filter((a) => a.clearingSince == null);
+    const muted = (a) => this.alerts.isMuted(a);
+    const quiet = (a) => muted(a) || !!a.acked; // never the headline if there's something louder
+    // Silenced or muted meanwhile, every one of them: nothing to announce.
+    if (!due.length || due.every(quiet)) return;
+    const order = { critical: 3, warning: 2, info: 1 };
+    const [lead, ...related] = due.sort((a, b) => quiet(a) - quiet(b) || order[b.severity] - order[a.severity] || (b.kind === 'crash') - (a.kind === 'crash'));
+    const extra = related.length;
+    this.notify?.(extra ? { ...lead, detail: `${lead.detail || ''}${lead.detail ? ' · ' : ''}+${extra} related alert${extra > 1 ? 's' : ''}` } : lead, { escalated: bucket.escalated, muted: due.every(muted), related });
+  }
+
+  /** New alerts held back by _sendBucket: sent once their condition is back, dropped once they resolve. */
+  _sendUnsent() {
+    for (const a of this.unsent) {
+      if (this.alerts.active.get(a.key) !== a) this.unsent.delete(a);
+      else if (a.clearingSince == null) {
+        this.unsent.delete(a);
+        this._onAlertOpen(a, { escalated: false, muted: this.alerts.isMuted(a) });
+      }
+    }
   }
 
   _endInitialPhase() {
     this.initialPhase = false;
-    const open = [...this.alerts.active.values()].filter((a) => a.severity !== 'info');
+    // What someone silenced (a restart keeps that: AlertBook.loadState) is no news, and muted problems aren't either.
+    const quiet = (a) => a.severity === 'info' || a.acked || a.silenced;
+    const open = [...this.alerts.active.values()].filter((a) => !quiet(a) && a.clearingSince == null && !this.alerts.isMuted(a));
+    // Ones that went away during startup are announced if they come back.
+    for (const a of this.alerts.active.values()) if (!quiet(a) && a.clearingSince != null) this.unsent.add(a);
     if (open.length) {
       const crit = open.filter((a) => a.severity === 'critical').length;
       this.notify?.(
@@ -384,7 +498,7 @@ export class Pipeline {
           view: { to: 'crashes' },
           summary: true,
         },
-        { escalated: false, muted: false },
+        { escalated: false, muted: false, related: open },
       );
     }
     this.initialQueue = [];
@@ -398,16 +512,48 @@ export class Pipeline {
     }, 250);
   }
 
+  /** Errors/min per service now (last 2 min) and usually (the 30 min before that). */
   errorRates() {
     const out = {};
     const services = new Set([...this.errors.groups.values()].map((g) => g.service));
     const now = this.now();
+    // A sliding window: whole calendar minutes would average in the minute that
+    // just started (nearly empty), so a steady rate would dip and flap.
+    const sliding = typeof this.errors.rate === 'function';
+    const perMin = (s, minutes) => (sliding ? this.errors.rate(s, minutes * MIN, now) : this.errors.ratePerMinute(s, minutes, now));
     for (const s of services) {
-      const nowRate = this.errors.ratePerMinute(s, 2, now);
-      const base = (this.errors.ratePerMinute(s, 32, now) * 32 - nowRate * 2) / 30;
+      const nowRate = perMin(s, 2);
+      const base = (perMin(s, 32) * 32 - nowRate * 2) / 30;
       out[s] = { now: nowRate, baseline: Math.max(0, base) };
     }
     return out;
+  }
+
+  /**
+   * A workload scaling up from zero (KEDA/HPA waking it, or someone scaling it
+   * back up) has no ready pod until its first one starts. That's a start, not an
+   * outage: it shows as deploying for up to 10 minutes, unless a pod is broken.
+   * Runs before _markStopped, which moves lastDesired on.
+   */
+  _markStarting(now) {
+    for (const s of this.model.services) {
+      if (s.desired === 0 || s.ready > 0) {
+        this.startingAt.delete(s.name);
+        continue;
+      }
+      if (this.lastDesired.get(s.name) === 0) this.startingAt.set(s.name, now);
+      if (s.health !== 'down') continue;
+      const pods = this.model.pods.filter((p) => p.service === s.name && !p.terminal);
+      if (pods.some((p) => p.state === 'bad')) continue;
+      const at = this.startingAt.get(s.name);
+      // Seen scaling up: 10 minutes to get a pod ready. Opened the app mid-start:
+      // an autoscaler that goes down to 0, and nothing but brand-new pods.
+      const starting = at != null ? now - at < 10 * MIN : s.scaling?.min === 0 && pods.length > 0 && pods.every((p) => p.createdAt != null && now - p.createdAt < 5 * MIN);
+      if (!starting) continue;
+      const n = `${s.desired} pod${s.desired === 1 ? '' : 's'}`;
+      s.health = 'deploying';
+      s.reasons = [`Starting from zero: ${s.scaling ? `the autoscaler asked for ${n}` : `scaled up to ${n}`}`, ...s.reasons.filter((r) => !/^0 of \d+ pods ready$/.test(r))];
+    }
   }
 
   /**
@@ -493,6 +639,7 @@ export class Pipeline {
   rebuild() {
     const now = this.now();
     this.model = buildModel(this.raw, { podMetrics: this.podMetrics, nodeMetrics: this.nodeMetrics, restartLedger: this.restartLedger, now });
+    this._markStarting(now);
     this._markStopped(now);
     this.router = makeRouter(this.model.routes);
     // The load balancer names the Kubernetes Service; the app shows workloads.
@@ -508,8 +655,15 @@ export class Pipeline {
       cloudflare: this.cloudflare,
       errorRates: this.errorRates(),
       dnsInfo: this.dnsInfo,
+      billingStorage: this.billingStorage,
+      billingCredits: this.billingCredits,
+      now,
     });
-    this.alerts.reconcile(conditions);
+    // Offline, what couldn't be read isn't news: no alert opens or closes until it's back.
+    if (!this.offline) {
+      this.alerts.reconcile(conditions);
+      this._sendUnsent();
+    }
     for (const k of ['services', 'pods', 'nodes', 'scaling', 'jobs', 'certificates', 'ingress', 'health', 'alerts', 'cluster']) this.dirty.add(k);
   }
 
@@ -524,7 +678,10 @@ export class Pipeline {
     const k8s = this.sources.kubernetes?.status;
     let overall = 'operational';
     let headline = 'All systems operational';
-    if (!this.synced.has('pods') && this.mode === 'live') {
+    if (this.offline) {
+      overall = 'offline';
+      headline = 'You’re offline';
+    } else if (!this.synced.has('pods') && this.mode === 'live') {
       overall = k8s === 'error' || k8s === 'forbidden' ? 'unknown' : 'connecting';
       headline = overall === 'unknown' ? "Can't reach the cluster" : 'Connecting…';
     } else if (down.length || dbDown.length || uptimeDown.some((u) => u.group === 'backend')) {
@@ -538,10 +695,13 @@ export class Pipeline {
     } else if (deploying.length) {
       headline = `All systems operational · ${deploying.length} rolling out`;
     }
-    const pods = this.model.pods.filter((p) => p.state !== 'done');
+    // Finished pods (evicted, preempted, done Job runs) aren't running and never will be again.
+    const pods = this.model.pods.filter((p) => p.state !== 'done' && !p.terminal);
     return {
       overall,
       headline,
+      // While offline: since when (what's shown is what was last seen, and alerts wait).
+      offlineSince: this.offline?.since ?? null,
       counts: {
         services: svc.length,
         healthy: svc.filter((s) => s.health === 'healthy' || s.health === 'idle').length,
@@ -564,7 +724,8 @@ export class Pipeline {
       case 'session':
         return this.session;
       case 'sources':
-        return this.sources;
+        // Offline, no source can be read: they're shown as offline (gray), not failing (red).
+        return this.offline ? Object.fromEntries(Object.entries(this.sources).map(([k, v]) => [k, v.status === 'off' ? v : { ...v, status: 'offline', message: 'This computer is offline. It reconnects by itself once the connection is back.' }])) : this.sources;
       case 'health':
         return this.health();
       case 'services': {
@@ -602,17 +763,34 @@ export class Pipeline {
         return this.model.ingress;
       case 'cluster':
         return { ...(this.session.cluster || {}), nodeCount: this.model.nodes.length, metricsAt: this.metricsAt };
-      case 'events':
-        return this.events.slice(0, 400).map(({ _src, ...e }) => ({ ...e, service: this._serviceForObject(e.kind, e.name) }));
-      case 'crashes':
-        return this.crashes;
+      case 'events': {
+        // Live ones (Kubernetes keeps about an hour), then older ones from the logs.
+        const live = this.events.slice(0, 400).map(({ _src, ...e }) => e);
+        const ids = new Set(live.map((e) => e.id));
+        const past = [...this.pastEvents.values()].filter((e) => !ids.has(e.id) && now - e.at < PAST_MS);
+        return [...live, ...past]
+          .sort((a, b) => b.at - a.at)
+          .slice(0, 1000)
+          .map((e) => ({ ...e, service: this._serviceForObject(e.kind, e.name) }));
+      }
+      case 'crashes': {
+        // From the pods' status (live, with exit codes), then the ones only the logs know about.
+        const past = this.pastCrashes.filter((c) => now - c.at < PAST_MS && !crashCovered(c, this.crashes));
+        return past.length ? [...this.crashes, ...past].sort((a, b) => b.at - a.at).slice(0, 300) : this.crashes;
+      }
       case 'errors':
         return {
           backend: this.errors.summary(now),
           frontend: this.sentry.issues.map((i) => ({ ...i, id: `sentry:${i.id}`, source: 'frontend', service: i.project, isNew: now - i.firstSeen < 24 * 60 * MIN, active: now - i.lastSeen < 60 * MIN })),
+          // What the backend counts cover: since the app started, or further back once the past week is in.
+          since: Math.min(this.startedAt, this.backfill.since ?? Infinity),
         };
       case 'alerts':
-        return this.alerts.summary();
+        return this._alertsView();
+      case 'backfill':
+        return this.backfill;
+      case 'logsBefore':
+        return this.logsBefore;
       case 'traffic': {
         const snap = this.trafficSnap || this.traffic.snapshot(now);
         const hist = this.trafficHistory(now);
@@ -672,6 +850,7 @@ export class Pipeline {
       this.dirty.add('database');
       if (this.cloudRun.length) this.dirty.add('cloudRun');
       this.errors.prune(now);
+      if (this.heldNewErrors.length) this._releaseNewErrors(false);
     }
     this.flushSections();
   }
@@ -694,12 +873,105 @@ export class Pipeline {
   }
 
   fullState() {
-    const names = ['session', 'sources', 'health', 'services', 'pods', 'nodes', 'scaling', 'jobs', 'certificates', 'ingress', 'cluster', 'events', 'crashes', 'errors', 'alerts', 'traffic', 'uptime', 'database', 'cloudRun', 'sentry', 'cloudflare', 'recap'];
+    const names = ['session', 'sources', 'health', 'services', 'pods', 'nodes', 'scaling', 'jobs', 'certificates', 'ingress', 'cluster', 'events', 'crashes', 'errors', 'alerts', 'traffic', 'uptime', 'database', 'cloudRun', 'sentry', 'cloudflare', 'recap', 'backfill', 'logsBefore'];
     return Object.fromEntries(names.map((n) => [n, this.section(n)]));
   }
 
   knownErrors() {
     return this.errors.known;
+  }
+
+  // ── The past week, from the logs (see backfill.mjs) ─────────────────────────
+  /** How the past-week load is going: { status: 'loading'|'done'|'error', since, until, notes, error }. */
+  setBackfill(patch) {
+    const was = this.backfill.status;
+    this.backfill = { ...this.backfill, ...patch };
+    const loading = this.backfill.status === 'loading';
+    // Entries near the start can come both ways: remember their ids until the load is over.
+    if (loading) this.errors.holdIds?.(Infinity);
+    else if (was === 'loading') {
+      this.errors.holdIds?.(this.now() + 2 * MIN);
+      this._releaseNewErrors(true);
+    }
+    this.dirty.add('backfill');
+    this.dirty.add('errors'); // what the counts cover changed
+  }
+
+  /**
+   * One slice of the past week: error lines, Kubernetes events, the crashes in them and the
+   * incidents they add up to. Error types become known; nothing here notifies or opens an alert.
+   */
+  addPast(slice) {
+    const { errors = [], events = [], crashes = [], incidents = [] } = slice;
+    // A slice that's already here (a load tried again feeds what it had first) isn't counted twice.
+    if (slice.from != null && slice.until != null) {
+      const key = `${slice.from}-${slice.until}`;
+      if (this.pastSlices.has(key)) return;
+      this.pastSlices.add(key);
+    }
+    const now = this.now();
+    if (errors.length && this.errors.addPast(errors, now)) this.dirty.add('errors');
+    if (events.length) {
+      for (const e of events) {
+        const had = this.pastEvents.get(e.id);
+        this.pastEvents.set(e.id, had ? mergeEventRows(had, e) : e);
+      }
+      if (this.pastEvents.size > 5000) this.pastEvents = new Map([...this.pastEvents].sort((a, b) => b[1].at - a[1].at).slice(0, 5000));
+      this.dirty.add('events');
+    }
+    if (crashes.length) {
+      this.pastCrashes = mergeCrashRecords(this.pastCrashes, crashes);
+      this.dirty.add('crashes');
+    }
+    if (incidents.length) {
+      // Recent issues, marked as from the logs: closed, never counted as open, never saved.
+      this.alerts.loadHistory(incidents.map((i) => pastIssue(i, this.svcToWorkload)));
+      this.dirty.add('alerts');
+    }
+  }
+
+  /** The Logs page's lines from just before the live stream: { since, until, lines (oldest first), capped }. */
+  setLogsBefore(block) {
+    this.logsBefore = block;
+    this.dirty.add('logsBefore');
+  }
+
+  /** Alert history worth saving for the next run: issues rebuilt from the logs are rebuilt again then. */
+  historyToSave() {
+    return this.alerts.historyToSave().filter((a) => !a.fromLogs);
+  }
+
+  /** The alerts section, without issues from the logs that an alert already covers (same problem, same time). */
+  _alertsView() {
+    const s = this.alerts.summary();
+    if (!s.history.some((a) => a.fromLogs)) return s;
+    if (this._alertsViewOf === s) return this._alertsViewOut;
+    const now = this.now();
+    const alerts = s.history.filter((a) => !a.fromLogs);
+    this._alertsViewOf = s;
+    this._alertsViewOut = { ...s, history: s.history.filter((a) => !a.fromLogs || !alerts.some((b) => sameProblem(a, b, now))) };
+    return this._alertsViewOut;
+  }
+
+  /**
+   * "New error" alerts held while the past week loaded: an error type found in it after all
+   * (seen before the live occurrence) isn't new. The rest are sent once the load is over,
+   * or after 5 minutes whatever happens.
+   */
+  _releaseNewErrors(all) {
+    const now = this.now();
+    const held = this.heldNewErrors;
+    this.heldNewErrors = [];
+    for (const h of held) {
+      if (!all && now - h.at < 5 * MIN) {
+        this.heldNewErrors.push(h);
+        continue;
+      }
+      const known = this.errors.known[h.g.id];
+      if (known != null && h.first != null && known < h.first) continue;
+      if (this.errors.groups.get(h.g.id) !== h.g) continue;
+      this._newErrorAlert(h.g);
+    }
   }
 
   shortName(n) {

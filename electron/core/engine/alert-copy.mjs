@@ -9,11 +9,11 @@ import { shortName } from './log-parse.mjs';
 const pct = (x) => `${Math.round(x * 100)}%`;
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
-/** "1536Mi" → "1.5 GB", "512Mi" → "512 MB". */
+/** "1536Mi" → "1.5 GB", "512Mi" → "512 MB" (also "1288490188800m", how Kubernetes may store 1.2Gi). */
 export function memText(limit) {
-  const m = /^(\d+(?:\.\d+)?)(Ki|Mi|Gi|Ti|K|M|G|T)?$/.exec(String(limit || ''));
+  const m = /^(\d+(?:\.\d+)?)(Ki|Mi|Gi|Ti|K|k|M|G|T|m)?$/.exec(String(limit || ''));
   if (!m) return limit || null;
-  const mib = Number(m[1]) * ({ Ki: 1 / 1024, K: 1 / 1024 / 1.048576, Mi: 1, M: 1 / 1.048576, Gi: 1024, G: 1000 / 1.048576, Ti: 1024 * 1024, T: 1e6 / 1.048576 }[m[2]] ?? 1 / 1048576);
+  const mib = Number(m[1]) * ({ Ki: 1 / 1024, K: 1 / 1024 / 1.048576, k: 1 / 1024 / 1.048576, Mi: 1, M: 1 / 1.048576, Gi: 1024, G: 1000 / 1.048576, Ti: 1024 * 1024, T: 1e6 / 1.048576, m: 1 / 1000 / 1048576 }[m[2]] ?? 1 / 1048576);
   return mib >= 1024 ? `${(mib / 1024).toFixed(mib % 1024 ? 1 : 0)} GB` : `${Math.round(mib)} MB`;
 }
 
@@ -59,9 +59,18 @@ const TROUBLE_ACTION = {
 export function serviceCopy(s) {
   const name = shortName(s.name);
   const trouble = podTrouble(s);
+  if (s.health === 'down' && s.desired === 0) {
+    // Scaled to 0 by hand (no autoscaler does it): nothing is broken, it's off.
+    return {
+      title: `${name} is stopped: it was scaled down to 0 pods`,
+      detail: s.reasons.join(' · '),
+      impact: `${whoIsHit(s)} They fail until it runs again.`,
+      action: `If that wasn't on purpose, scale it back up (kubectl scale ${String(s.kind || 'deployment').toLowerCase()} ${s.name} --replicas=1) or re-run its deploy.`,
+    };
+  }
   if (s.health === 'down') {
     return {
-      title: `${name} is down: none of its ${plural(s.desired, 'pod')} ${s.desired === 1 ? 'is' : 'are'} ready`,
+      title: s.desired === 1 ? `${name} is down: its pod isn't ready` : `${name} is down: none of its ${s.desired} pods are ready`,
       detail: s.reasons.join(' · '),
       impact: `${whoIsHit(s)} They fail until a pod is ready again.`,
       action: trouble ? TROUBLE_ACTION[trouble](s) : 'Open the service to see why its pods aren’t ready (pod events and logs).',
@@ -81,6 +90,14 @@ export function serviceCopy(s) {
       detail: s.reasons.join(' · '),
       impact: `It runs with less capacity. If the working pods fail too, ${name} goes down. ${whoIsHit(s)}`,
       action: TROUBLE_ACTION[trouble](s),
+    };
+  }
+  if (s.rolloutStuck) {
+    return {
+      title: `${name}: the new version is stuck rolling out`,
+      detail: s.reasons.join(' · '),
+      impact: `Its new pods didn't become ready in time, so Kubernetes marked the rollout as failed. The old pods keep serving meanwhile. ${whoIsHit(s)}`,
+      action: 'Open the service: the new pods’ events and logs say why they don’t get ready (often a failing health check or a crash on start). Fix it and deploy again, or roll back.',
     };
   }
   if (s.recentRestarts > 0) {

@@ -2,12 +2,17 @@ import { useState } from 'react';
 import { invoke, setState } from '../lib/store.js';
 import { Button, cx } from '../components/ui.jsx';
 import Icon from '../components/icons.jsx';
+import { cleanError } from './Traffic.jsx';
+import { isMac } from '../lib/platform.js';
+
+// A service-account key is a JSON file of about 2 KB.
+const MAX_KEY_BYTES = 64 * 1024;
 
 export default function SignIn({ info }) {
   const [busy, setBusy] = useState(null);
   const [error, setError] = useState(null);
   const [drag, setDrag] = useState(false);
-  const isMac = info.platform === 'darwin';
+  const mac = isMac();
 
   const run = async (kind, fn) => {
     setBusy(kind);
@@ -16,7 +21,7 @@ export default function SignIn({ info }) {
       const next = await fn();
       if (next && !next.canceled) setState({ info: next });
     } catch (e) {
-      setError(e.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, ''));
+      setError(cleanError(e));
     }
     setBusy(null);
   };
@@ -24,14 +29,37 @@ export default function SignIn({ info }) {
   const onDrop = async (e) => {
     e.preventDefault();
     setDrag(false);
+    if (busy) return;
     const file = e.dataTransfer.files?.[0];
     if (!file) return;
-    const text = await file.text();
+    if (file.size > MAX_KEY_BYTES) {
+      setError(`${file.name} is too big to be a key file. The key is the small .json file Google Cloud downloaded when the key was made.`);
+      return;
+    }
+    let text;
+    try {
+      text = await file.text();
+      JSON.parse(text);
+    } catch {
+      setError(`${file.name} isn't a .json key file. Drop the .json file Google Cloud downloaded when the key was made.`);
+      return;
+    }
     run('key', () => invoke('auth:serviceAccount', { text }));
   };
 
   return (
-    <div className="h-full relative overflow-hidden drag" onDragOver={(e) => (e.preventDefault(), setDrag(true))} onDragLeave={() => setDrag(false)} onDrop={onDrop}>
+    // The whole window takes the dropped key file. Drag regions (the strip at the top, for moving the
+    // window) swallow drag-and-drop in Electron, so the rest of the window is not one.
+    <div
+      className="h-full relative overflow-hidden no-drag"
+      onDragOver={(e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+        setDrag(true);
+      }}
+      onDragLeave={(e) => !e.currentTarget.contains(e.relatedTarget) && setDrag(false)}
+      onDrop={onDrop}
+    >
       <div
         className="absolute inset-0"
         style={{
@@ -39,8 +67,9 @@ export default function SignIn({ info }) {
             'radial-gradient(1200px 600px at 15% -10%, color-mix(in srgb, var(--accent) 22%, transparent), transparent 60%), radial-gradient(900px 500px at 110% 110%, color-mix(in srgb, var(--indigo) 20%, transparent), transparent 60%), var(--bg-grouped)',
         }}
       />
-      <div className={cx('relative h-full grid place-items-center p-8', isMac && 'pt-12')}>
-        <div className={cx('no-drag glass-strong rounded-[30px] w-[420px] px-9 pt-9 pb-7 flex flex-col items-center text-center animate-sheet transition-shadow', drag && 'shadow-[0_0_0_3px_var(--accent),var(--shadow-pop)]')}>
+      <div className="drag absolute top-0 inset-x-0 h-11 z-10" />
+      <div className={cx('relative h-full grid place-items-center p-8', mac && 'pt-12')}>
+        <div className={cx('glass-strong rounded-[30px] w-[420px] px-9 pt-9 pb-7 flex flex-col items-center text-center animate-sheet transition-shadow', drag && 'shadow-[0_0_0_3px_var(--accent),var(--shadow-pop)]')}>
           <img src="./icon.png" alt="" className="w-[76px] h-[76px] drop-shadow-xl" />
           <h1 className="text-large-title font-bold tracking-[-0.02em] mt-4">Flobi Pulse</h1>
           <p className="text-body text-label-2 mt-1.5 max-w-[300px]">Live health for the whole Flobi platform — every service, request, error and crash.</p>
@@ -55,7 +84,7 @@ export default function SignIn({ info }) {
           {error && (
             <div className="w-full mt-4 rounded-[14px] bg-red-tint px-3.5 py-2.5 text-callout text-left flex gap-2 animate-rise">
               <Icon name="errors" size={15} className="text-red shrink-0 mt-px" />
-              <span className="selectable">{error}</span>
+              <span className="selectable break-words min-w-0">{error}</span>
             </div>
           )}
 

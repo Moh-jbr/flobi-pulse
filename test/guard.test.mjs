@@ -2,6 +2,7 @@ import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { checkRequest, configureGuard, resetGuard, ReadOnlyViolation } from '../electron/core/net/guard.mjs';
 import { EDGE_QUERY, EDGE_ADAPTIVE_QUERY, EDGE_HOURLY_QUERY, HOST_ERRORS_QUERY } from '../electron/core/sources/cloudflare.mjs';
+import { encodeTailRequest } from '../electron/core/net/protobuf.mjs';
 
 const K8S = 'https://34.77.1.2';
 
@@ -79,7 +80,7 @@ test('Google APIs: only the read endpoints are allowed', () => {
 
   allowed({ method: 'POST', url: 'https://logging.googleapis.com/v2/entries:list', body: JSON.stringify({ resourceNames: ['projects/flobi-prod-2026'] }) });
   blocked({ method: 'POST', url: 'https://logging.googleapis.com/v2/entries:list', body: JSON.stringify({ resourceNames: ['projects/someone-else'] }) });
-  allowed({ method: 'POST', url: 'https://logging.googleapis.com/google.logging.v2.LoggingServiceV2/TailLogEntries' });
+  allowed({ method: 'POST', url: 'https://logging.googleapis.com/google.logging.v2.LoggingServiceV2/TailLogEntries', body: encodeTailRequest({ resourceNames: ['projects/flobi-prod-2026'] }) });
   blocked({ method: 'POST', url: 'https://logging.googleapis.com/v2/entries:write' });
   blocked({ method: 'DELETE', url: 'https://logging.googleapis.com/v2/projects/flobi-prod-2026/logs/x' });
   blocked({ method: 'POST', url: 'https://logging.googleapis.com/v2/projects/flobi-prod-2026/sinks' });

@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react';
 import { useStore, inspect } from '../lib/store.js';
 import { ViewScroll } from '../components/Toolbar.jsx';
-import { Card, Segmented, SearchField, Empty, cx, useNow, Pill } from '../components/ui.jsx';
+import { Card, Segmented, SearchField, Empty, Button, cx, useNow, Pill } from '../components/ui.jsx';
 import { ago } from '../lib/format.js';
 import Select from '../components/Select.jsx';
 import ExportButton from '../components/ExportButton.jsx';
+import PastWeekNote from '../components/PastWeek.jsx';
 
 const EVENT_COLUMNS = [
   { label: 'When', get: (e) => new Date(e.at) },
@@ -34,6 +35,8 @@ const EXPLAIN = {
 
 export default function Events() {
   const events = useStore((s) => s.sections.events) || [];
+  const past = useStore((s) => s.sections.backfill);
+  const pastLoaded = past?.status === 'done' || !!past?.since;
   const selected = useStore((s) => (s.inspector?.type === 'event' ? s.inspector.id : null));
   const now = useNow(15_000);
   const [type, setType] = useState('all');
@@ -46,6 +49,12 @@ export default function Events() {
     return events.filter((e) => (type === 'all' || e.type === type) && (kind === 'all' || e.kind === kind) && (!ql || `${e.reason} ${e.name} ${e.message}`.toLowerCase().includes(ql)));
   }, [events, type, kind, q]);
   const warnings = events.filter((e) => e.type === 'Warning').length;
+  const filtering = type !== 'all' || kind !== 'all' || q.trim() !== '';
+  const clearFilters = () => {
+    setType('all');
+    setKind('all');
+    setQ('');
+  };
 
   return (
     <ViewScroll>
@@ -65,8 +74,14 @@ export default function Events() {
           <ExportButton name="kubernetes-events" title="Kubernetes events" columns={EVENT_COLUMNS} rows={list} />
         </div>
       </div>
+      <PastWeekNote kinds={['events']} />
       <Card pad={false} className="overflow-hidden animate-rise" style={{ animationDelay: '60ms' }}>
-        {!list.length && <Empty title="No events" message="Kubernetes keeps events for about an hour. Older ones are in the Timeline." />}
+        {!list.length &&
+          (filtering && events.length ? (
+            <Empty title="Nothing matches these filters" message={events.length === 1 ? 'Clear them to see the one event.' : `Clear them to see all ${events.length} events.`} action={<Button onClick={clearFilters}>Clear filters</Button>} />
+          ) : (
+            <Empty title="No events" message={pastLoaded ? 'No warnings, restarts or scaling in the last 7 days.' : 'Kubernetes keeps events for about an hour. Older ones are in the Timeline.'} />
+          ))}
         {list.map((e) => (
           <button key={e.id} type="button" onClick={() => inspect('event', e.id, e)} className={cx('w-full text-left grid grid-cols-[76px_150px_minmax(0,1fr)_56px] gap-4 px-4 py-2.5 hairline-b hover:bg-fill-4 items-start', selected === e.id && '!bg-accent-tint')}>
             <span className="text-callout text-label-2 tabular pt-0.5">{ago(e.at, now)}</span>
@@ -86,6 +101,7 @@ export default function Events() {
           </button>
         ))}
       </Card>
+      {pastLoaded && <p className="text-footnote text-label-3 px-1 mt-2">Kubernetes keeps events for about an hour. Older ones here come from Google's logs: warnings, restarts and scaling from the last 7 days.</p>}
     </ViewScroll>
   );
 }

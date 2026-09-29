@@ -6,7 +6,8 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import Icon from './icons.jsx';
 import { invoke } from '../lib/store.js';
-import { cx } from './ui.jsx';
+import { cx, LAYER, useLayer } from './ui.jsx';
+import { shortcut } from '../lib/platform.js';
 
 const isEditable = (el) => !!el && (el.isContentEditable || (el.tagName === 'INPUT' && !['checkbox', 'radio', 'range', 'button', 'submit'].includes(el.type)) || el.tagName === 'TEXTAREA');
 
@@ -60,22 +61,17 @@ export default function ContextMenu() {
     setPos({ left: Math.min(menu.x, window.innerWidth - r.width - 6), top: menu.y + r.height > window.innerHeight - 6 ? Math.max(6, menu.y - r.height) : menu.y });
   }, [menu]);
 
-  useEffect(() => {
-    if (!menu) return;
-    const onKey = (e) => e.key === 'Escape' && setMenu(null);
-    window.addEventListener('keydown', onKey, true);
-    return () => window.removeEventListener('keydown', onKey, true);
-  }, [menu]);
+  // The topmost layer: Escape closes the menu and nothing under it.
+  useLayer(!!menu, LAYER.menu, () => setMenu(null));
 
   if (!menu) return null;
-  const mod = window.pulse?.platform === 'darwin' || navigator.platform.startsWith('Mac') ? '⌘' : 'Ctrl+';
   const run = async (it) => {
     setMenu(null);
     if (it.text != null) await invoke('clipboard:write', { text: it.text });
     else await invoke('edit:do', { action: it.action });
   };
   return createPortal(
-    <div className="fixed inset-0 z-[90]" onMouseDown={(e) => (e.preventDefault(), setMenu(null))} onContextMenu={(e) => (e.preventDefault(), setMenu(null))}>
+    <div className="fixed inset-0 z-menu" data-layer="menu" onMouseDown={(e) => (e.preventDefault(), setMenu(null))} onContextMenu={(e) => (e.preventDefault(), setMenu(null))}>
       <div
         ref={box}
         role="menu"
@@ -97,7 +93,7 @@ export default function ContextMenu() {
             >
               <span className="w-3.5 grid place-items-center shrink-0">{it.icon && <Icon name={it.icon} size={13} />}</span>
               <span className="flex-1 truncate">{it.label}</span>
-              {it.keys && <span className={cx('text-footnote text-label-3 tabular', !it.disabled && 'group-hover:text-white/80')}>{mod + it.keys}</span>}
+              {it.keys && <span className={cx('text-footnote text-label-3 tabular', !it.disabled && 'group-hover:text-white/80')}>{shortcut(it.keys)}</span>}
             </button>
           ),
         )}

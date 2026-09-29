@@ -1,9 +1,11 @@
-import { useStore, navigate, setState } from '../lib/store.js';
+import { useStore, navigate } from '../lib/store.js';
 import Icon from './icons.jsx';
 import { cx, StatusDot, useWindowWidth } from './ui.jsx';
-import { compact } from '../lib/format.js';
+import { compact, clockHM } from '../lib/format.js';
+import { isMac, shortcut } from '../lib/platform.js';
 
-const GROUPS = [
+/** The views in sidebar order. The command palette and Ctrl/⌘+1–9 follow it. */
+export const NAV_GROUPS = [
   {
     title: 'Monitor',
     items: [
@@ -31,6 +33,10 @@ const GROUPS = [
       { id: 'versions', label: 'Versions', icon: 'tag' },
     ],
   },
+  {
+    title: 'Billing',
+    items: [{ id: 'costs', label: 'Costs', icon: 'receipt' }],
+  },
 ];
 
 const OVERALL = {
@@ -39,29 +45,43 @@ const OVERALL = {
   outage: { tone: 'red', label: 'Outage' },
   connecting: { tone: 'accent', label: 'Connecting' },
   unknown: { tone: 'gray', label: 'Unknown' },
+  // This computer is offline: nothing is called down, alerts wait (pipeline.setConnectivity).
+  offline: { tone: 'gray', label: 'Offline' },
 };
 
-function SourceDots({ sources, session }) {
-  const list = [
-    ['kubernetes', 'Cluster'],
-    ['live', 'Live logs'],
-    ['cloudsql', 'Database'],
-    ['sentry', 'Sentry'],
-    ['cloudflare', 'Cloudflare'],
-  ];
-  const tone = (st) => (!st ? 'gray' : st === 'ok' || st === 'streaming' ? 'green' : st === 'connecting' ? 'accent' : st === 'off' ? 'gray' : st === 'degraded' || st === 'unavailable' ? 'orange' : 'red');
+/** The line under the headline: what's running, or while offline since when (and that alerts wait). */
+function healthLine(health) {
+  if (health?.overall === 'offline') return `Since ${clockHM(health.offlineSince)} · alerts wait until you’re back online`;
+  return health?.counts ? `${health.counts.services} services · ${health.counts.podsReady}/${health.counts.pods} pods ready` : null;
+}
+
+const SOURCES = [
+  ['kubernetes', 'Cluster'],
+  ['live', 'Live'],
+  ['cloudsql', 'Database'],
+  ['sentry', 'Sentry'],
+  ['cloudflare', 'Cloudflare'],
+];
+const SOURCES_SHOWN = 3;
+
+/** One row: the first few data sources with their status, "+2" for the rest (all of them in the tooltip). Opens Settings. */
+function SourceDots({ sources }) {
+  const tone = (st) => (!st ? 'gray' : st === 'ok' || st === 'streaming' ? 'green' : st === 'connecting' ? 'accent' : st === 'off' || st === 'offline' ? 'gray' : st === 'degraded' || st === 'unavailable' ? 'orange' : 'red');
   return (
-    <div className="flex items-center gap-2.5 px-2.5" title={list.map(([k, l]) => `${l}: ${sources?.[k]?.status || 'waiting'}${sources?.[k]?.message ? ` — ${sources[k].message}` : ''}`).join('\n')}>
-      {list.map(([k, l]) => (
-        <span key={k} className="inline-flex items-center gap-1 text-footnote text-label-3">
+    <button
+      type="button"
+      onClick={() => navigate('settings')}
+      title={SOURCES.map(([k, l]) => `${l}: ${sources?.[k]?.status || 'waiting'}${sources?.[k]?.message ? ` — ${sources[k].message}` : ''}`).join('\n')}
+      className="no-drag w-full h-6 px-2.5 rounded-[8px] flex items-center gap-2.5 text-footnote text-label-3 hover:text-label-2 hover:bg-fill-4 whitespace-nowrap overflow-hidden"
+    >
+      {SOURCES.slice(0, SOURCES_SHOWN).map(([k, l]) => (
+        <span key={k} className="inline-flex items-center gap-1 min-w-0">
           <StatusDot tone={tone(sources?.[k]?.status)} size={6} />
-          {l}
+          <span className="truncate">{l}</span>
         </span>
-      )).slice(0, 3)}
-      <button type="button" onClick={() => navigate('settings')} className="ml-auto text-footnote text-label-3 hover:text-label no-drag">
-        +{list.length - 3}
-      </button>
-    </div>
+      ))}
+      <span className="ml-auto shrink-0">+{SOURCES.length - SOURCES_SHOWN}</span>
+    </button>
   );
 }
 
@@ -76,13 +96,16 @@ export default function Sidebar() {
   const session = useStore((s) => s.sections.session);
   const info = useStore((s) => s.info);
   const versions = useStore((s) => s.versions);
-  const isMac = info?.platform === 'darwin';
+  const mac = isMac();
+  const settingsTip = `Settings (${shortcut(',')})`;
 
   const crit = alerts?.counts?.critical || 0;
+  // Alerts that are clearing (the problem went away, they close after a hold) aren't open problems.
+  const openAlerts = (alerts?.active || []).filter((a) => !a.clearing).length;
   const activeErrors = (errors?.backend || []).filter((g) => g.active).length + (errors?.frontend || []).filter((g) => g.active).length;
   const warnEvents = (events || []).filter((e) => e.type === 'Warning' && Date.now() - e.at < 60 * 60_000).length;
   const badges = {
-    recent: alerts?.active?.length ? { text: alerts.active.length, tone: 'plain' } : null,
+    recent: openAlerts ? { text: openAlerts, tone: 'plain' } : null,
     versions: (() => {
       const n = (versions?.feed || []).filter((r) => !r.baseline && r.publishedAt > (versions.viewedAt || 0) && versions.viewedAt).length;
       return n ? { text: `${n} new`, tone: 'plain' } : null;
@@ -107,14 +130,14 @@ export default function Sidebar() {
     return (
       <aside className="w-[76px] shrink-0 p-2 pr-0 drag">
         <div className="glass-panel h-full rounded-[20px] flex flex-col items-center overflow-hidden">
-          <div className={cx('shrink-0', isMac ? 'pt-[46px] pb-2' : 'pt-4 pb-2')}>
+          <div className={cx('shrink-0', mac ? 'pt-[46px] pb-2' : 'pt-4 pb-2')}>
             <img src="./icon.png" alt="" className="w-[26px] h-[26px] rounded-[7px]" onError={(e) => (e.currentTarget.style.display = 'none')} title={`Flobi Pulse · ${session?.mode === 'demo' ? 'Demo' : 'Prod'}`} />
           </div>
-          <button type="button" onClick={() => navigate('overview')} title={`${health?.headline || 'Connecting…'}${health?.counts ? `\n${health.counts.services} services · ${health.counts.podsReady}/${health.counts.pods} pods ready` : ''}`} className="no-drag press w-11 h-11 [@media(max-height:720px)]:h-9 mb-1 rounded-[14px] grid place-items-center bg-fill-4 hover:bg-fill-3">
+          <button type="button" onClick={() => navigate('overview')} title={`${health?.headline || 'Connecting…'}${healthLine(health) ? `\n${healthLine(health)}` : ''}`} className="no-drag press w-11 h-11 [@media(max-height:720px)]:h-9 mb-1 rounded-[14px] grid place-items-center bg-fill-4 hover:bg-fill-3">
             <StatusDot tone={o.tone} pulse={health?.overall === 'operational' || health?.overall === 'outage'} size={11} />
           </button>
           <nav className="no-drag flex-1 min-h-0 w-full overflow-y-auto px-2 pb-2 flex flex-col items-center">
-            {GROUPS.map((g, gi) => (
+            {NAV_GROUPS.map((g, gi) => (
               <div key={g.title} className={cx('w-full flex flex-col items-center gap-0.5', gi > 0 && 'mt-2 pt-2 [@media(max-height:720px)]:mt-1 [@media(max-height:720px)]:pt-1 hairline-t')}>
                 {g.items.map((it) => {
                   const active = view === it.id;
@@ -130,7 +153,7 @@ export default function Sidebar() {
             ))}
           </nav>
           <div className="no-drag shrink-0 pb-2 pt-2 w-full flex flex-col items-center gap-1.5 hairline-t">
-            <button type="button" title="Settings (Ctrl+,)" aria-label="Settings" onClick={() => navigate('settings')} className={cx('w-11 h-10 [@media(max-height:720px)]:h-8 rounded-[12px] grid place-items-center text-label-2 hover:text-label hover:bg-fill-4', view === 'settings' && 'text-accent bg-fill-2')}>
+            <button type="button" title={settingsTip} aria-label="Settings" onClick={() => navigate('settings')} className={cx('w-11 h-10 [@media(max-height:720px)]:h-8 rounded-[12px] grid place-items-center text-label-2 hover:text-label hover:bg-fill-4', view === 'settings' && 'text-accent bg-fill-2')}>
               <Icon name="settings" size={18} />
             </button>
             <div title={`${identity?.name || 'Signed in'}${identity?.email ? ` · ${identity.email}` : ''}`} className="w-8 h-8 rounded-[10px] bg-accent-tint text-accent grid place-items-center text-subheadline font-semibold">
@@ -145,7 +168,7 @@ export default function Sidebar() {
   return (
     <aside className="w-[244px] shrink-0 p-2 pr-0 drag">
       <div className="glass-panel h-full rounded-[20px] flex flex-col overflow-hidden">
-        <div className={cx('shrink-0 flex items-center gap-2 px-[18px]', isMac ? 'pt-[46px] pb-2' : 'pt-4 pb-2')}>
+        <div className={cx('shrink-0 flex items-center gap-2 px-[18px]', mac ? 'pt-[46px] pb-2' : 'pt-4 pb-2')}>
           <img src="./icon.png" alt="" className="w-[22px] h-[22px] rounded-[6px]" onError={(e) => (e.currentTarget.style.display = 'none')} />
           <span className="text-headline font-semibold tracking-[-0.01em]">Flobi Pulse</span>
           <span className="ml-auto text-footnote font-semibold px-1.5 h-[18px] inline-flex items-center rounded-[5px] bg-fill-3 text-label-2 uppercase tracking-wide">
@@ -162,15 +185,11 @@ export default function Sidebar() {
             <StatusDot className="mt-[4px] mx-[3.5px]" tone={o.tone} pulse={health?.overall === 'operational' || health?.overall === 'outage'} size={9} />
             <span className="text-headline font-semibold line-clamp-2">{health?.headline || 'Connecting…'}</span>
           </div>
-          {health?.counts && (
-            <div className="text-subheadline text-label-2 mt-1 pl-[26px] tabular">
-              {health.counts.services} services · {health.counts.podsReady}/{health.counts.pods} pods ready
-            </div>
-          )}
+          {healthLine(health) && <div className="text-subheadline text-label-2 mt-1 pl-[26px] tabular">{healthLine(health)}</div>}
         </button>
 
         <nav className="no-drag flex-1 min-h-0 overflow-y-auto px-2 pb-2">
-          {GROUPS.map((g) => (
+          {NAV_GROUPS.map((g) => (
             <div key={g.title} className="mt-2 first:mt-0">
               <div className="px-2.5 pt-2 pb-1 text-subheadline font-semibold text-label-3">{g.title}</div>
               {g.items.map((it) => {
@@ -198,14 +217,14 @@ export default function Sidebar() {
         </nav>
 
         <div className="no-drag shrink-0 px-2 pb-2 pt-2 hairline-t">
-          <SourceDots sources={sources} session={session} />
+          <SourceDots sources={sources} />
           <div className="mt-2 flex items-center gap-2.5 py-1.5 pl-2.5 pr-1 rounded-[12px] hover:bg-fill-4 transition-colors">
             <div className="w-7 h-7 rounded-[9px] bg-accent-tint text-accent grid place-items-center text-subheadline font-semibold shrink-0">{initials}</div>
             <div className="min-w-0 flex-1">
               <div className="text-callout font-medium truncate">{identity?.name || 'Signed in'}</div>
               <div className="text-footnote text-label-3 truncate">{identity?.kind === 'service-account' ? 'Service account' : identity?.kind === 'demo' ? 'Simulated data' : identity?.email}</div>
             </div>
-            <button type="button" title="Settings (⌘,)" onClick={() => navigate('settings')} className={cx('w-7 h-7 rounded-full grid place-items-center text-label-2 hover:text-label hover:bg-fill-3', view === 'settings' && 'text-accent bg-accent-tint')}>
+            <button type="button" title={settingsTip} aria-label="Settings" onClick={() => navigate('settings')} className={cx('w-7 h-7 rounded-full grid place-items-center text-label-2 hover:text-label hover:bg-fill-3', view === 'settings' && 'text-accent bg-accent-tint')}>
               <Icon name="settings" size={16} />
             </button>
           </div>
@@ -213,8 +232,4 @@ export default function Sidebar() {
       </div>
     </aside>
   );
-}
-
-export function openPalette() {
-  setState({ palette: true });
 }

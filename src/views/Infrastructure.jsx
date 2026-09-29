@@ -90,7 +90,6 @@ function ReplicaBar({ min, max, current }) {
 }
 
 export default function Infrastructure() {
-  const cluster = useStore((s) => s.sections.cluster);
   const session = useStore((s) => s.sections.session);
   const nodes = useStore((s) => s.sections.nodes) || [];
   const scaling = useStore((s) => s.sections.scaling) || [];

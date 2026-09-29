@@ -1,24 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useStore, setState, navigate, inspect, invoke } from '../lib/store.js';
 import Icon from './icons.jsx';
-import { cx, HealthPill, StatusDot, STATE_TONE } from './ui.jsx';
+import { cx, HealthPill, StatusDot, STATE_TONE, LAYER, useLayer, useModalFocus } from './ui.jsx';
+import { NAV_GROUPS } from './Sidebar.jsx';
 
-const VIEWS = [
-  ['overview', 'Overview', 'overview'],
-  ['recent', 'Recent issues', 'bell'],
-  ['versions', 'Versions', 'tag'],
-  ['traffic', 'Live Traffic', 'traffic'],
-  ['errors', 'Errors', 'errors'],
-  ['crashes', 'Crashes & Down', 'crashes'],
-  ['logs', 'Logs', 'logs'],
-  ['events', 'Events', 'events'],
-  ['infrastructure', 'Infrastructure', 'infrastructure'],
-  ['database', 'Database', 'database'],
-  ['frontends', 'Frontends', 'frontends'],
-  ['timeline', 'Timeline', 'timeline'],
-  ['settings', 'Settings', 'settings'],
-];
+// "Go to" lists the views in sidebar order, with the sidebar's names; Settings (the sidebar's footer) last.
+const VIEWS = [...NAV_GROUPS.flatMap((g) => g.items), { id: 'settings', label: 'Settings', icon: 'settings' }];
 
 function score(text, q) {
   const t = text.toLowerCase();
@@ -36,6 +24,11 @@ export default function CommandPalette() {
   const [q, setQ] = useState('');
   const [idx, setIdx] = useState(0);
   const listRef = useRef(null);
+  const box = useRef(null);
+  const id = useId();
+  const close = () => setState({ palette: false });
+  useLayer(open, LAYER.sheet, close);
+  useModalFocus(box, open);
 
   useEffect(() => {
     if (open) {
@@ -47,7 +40,7 @@ export default function CommandPalette() {
   const items = useMemo(() => {
     const ql = q.trim().toLowerCase();
     const all = [
-      ...VIEWS.map(([id, label, icon]) => ({ key: `v:${id}`, group: 'Go to', label, icon, run: () => navigate(id) })),
+      ...VIEWS.map((v) => ({ key: `v:${v.id}`, group: 'Go to', label: v.label, icon: v.icon, run: () => navigate(v.id) })),
       ...services.map((s) => ({ key: `s:${s.name}`, group: 'Services', label: s.short, sub: s.name, health: s.health, icon: 'stack', run: () => inspect('service', s.name) })),
       ...services.map((s) => ({ key: `l:${s.name}`, group: 'Follow logs', label: `Logs: ${s.short}`, icon: 'logs', run: () => navigate({ to: 'logs', service: s.name }) })),
       ...pods.map((p) => ({ key: `p:${p.name}`, group: 'Pods', label: p.name, podState: p.state, icon: 'pod', run: () => inspect('pod', p.name) })),
@@ -67,43 +60,57 @@ export default function CommandPalette() {
   }, [idx]);
 
   if (!open) return null;
-  const close = () => setState({ palette: false });
   const pick = (it) => {
     close();
     it?.run();
   };
+  const optionId = (i) => `${id}-o${i}`;
 
   let lastGroup = null;
   return createPortal(
-    <div className="fixed inset-0 z-50 no-drag" onMouseDown={(e) => e.target === e.currentTarget && close()} style={{ background: 'var(--scrim)' }}>
-      <div className="absolute left-1/2 top-[14%] -translate-x-1/2 w-[620px] glass-strong rounded-[24px] overflow-hidden animate-sheet">
+    <div className="fixed inset-0 z-sheet no-drag" data-layer="palette" onMouseDown={(e) => e.target === e.currentTarget && close()} style={{ background: 'var(--scrim)' }}>
+      <div ref={box} role="dialog" aria-modal="true" aria-label="Search" tabIndex={-1} className="absolute left-1/2 top-[14%] -translate-x-1/2 w-[620px] max-w-[calc(100vw-32px)] glass-strong rounded-[24px] overflow-hidden animate-sheet outline-none">
         <div className="flex items-center gap-3 px-5 h-14 hairline-b">
           <Icon name="search" size={19} className="text-label-2" />
           <input
-            autoFocus
+            data-autofocus=""
+            role="combobox"
+            aria-label="Jump to a service, pod, view or action"
+            aria-expanded="true"
+            aria-controls={`${id}-list`}
+            aria-autocomplete="list"
+            aria-activedescendant={items[idx] ? optionId(idx) : undefined}
             value={q}
             onChange={(e) => (setQ(e.target.value), setIdx(0))}
             onKeyDown={(e) => {
               if (e.key === 'ArrowDown') (e.preventDefault(), setIdx((i) => Math.min(items.length - 1, i + 1)));
               else if (e.key === 'ArrowUp') (e.preventDefault(), setIdx((i) => Math.max(0, i - 1)));
               else if (e.key === 'Enter') pick(items[idx]);
-              else if (e.key === 'Escape') close();
             }}
             placeholder="Jump to a service, pod, view or action…"
             className="flex-1 bg-transparent outline-none text-title3 placeholder:text-label-3"
             spellCheck={false}
           />
         </div>
-        <div ref={listRef} className="max-h-[min(420px,calc(100vh-220px))] overflow-y-auto p-2">
+        <div ref={listRef} id={`${id}-list`} role="listbox" aria-label="Results" className="max-h-[min(420px,calc(100vh-220px))] overflow-y-auto p-2">
           {!items.length && <div className="py-10 text-center text-callout text-label-2">No matches</div>}
           {items.map((it, i) => {
             const header = it.group !== lastGroup ? it.group : null;
             lastGroup = it.group;
             return (
-              <div key={it.key}>
-                {header && <div className="px-3 pt-2 pb-1 text-subheadline font-semibold text-label-3">{header}</div>}
+              <div key={it.key} role="presentation">
+                {header && (
+                  <div role="presentation" className="px-3 pt-2 pb-1 text-subheadline font-semibold text-label-3">
+                    {header}
+                  </div>
+                )}
+                {/* Options aren't tab stops: the arrow keys move through them from the search field. */}
                 <button
                   type="button"
+                  id={optionId(i)}
+                  role="option"
+                  aria-selected={i === idx}
+                  tabIndex={-1}
                   data-i={i}
                   onMouseMove={() => setIdx(i)}
                   onClick={() => pick(it)}

@@ -103,7 +103,8 @@ export function cpuMilli(q) {
   return parseFloat(s) * 1000;
 }
 
-const BIN = { Ki: 2 ** 10, Mi: 2 ** 20, Gi: 2 ** 30, Ti: 2 ** 40, K: 1e3, k: 1e3, M: 1e6, G: 1e9, T: 1e12 };
+// `m` is milli: Kubernetes may store 1.2Gi as "1288490188800m".
+const BIN = { Ki: 2 ** 10, Mi: 2 ** 20, Gi: 2 ** 30, Ti: 2 ** 40, K: 1e3, k: 1e3, M: 1e6, G: 1e9, T: 1e12, m: 1e-3 };
 export function bytes(q) {
   if (q == null) return 0;
   const m = String(q).match(/^([\d.]+)([A-Za-z]*)$/);
@@ -116,6 +117,7 @@ const t = (s) => (s ? Date.parse(s) : null);
 // ── Pods ────────────────────────────────────────────────────────────────────
 const BAD = new Set(['CrashLoopBackOff', 'ImagePullBackOff', 'ErrImagePull', 'CreateContainerConfigError', 'CreateContainerError', 'InvalidImageName', 'OOMKilled', 'Error', 'Failed', 'Unschedulable', 'Evicted', 'RunContainerError']);
 const PENDINGISH = new Set(['ContainerCreating', 'PodInitializing', 'Pending']);
+const UNSCHEDULABLE_GRACE_MS = 5 * 60_000;
 
 export function workloadOf(pod) {
   const owner = pod.metadata.ownerReferences?.[0];
@@ -129,10 +131,12 @@ export function workloadOf(pod) {
   return owner.name;
 }
 
-export function podStatus(pod, now = Date.now()) {
+export function podStatus(pod) {
   const st = pod.status || {};
   if (pod.metadata.deletionTimestamp) return 'Terminating';
   if (st.reason === 'Evicted') return 'Evicted';
+  // Like kubectl: a finished pod shows why the node ended it (NodeShutdown, Preempting, …).
+  if (st.phase === 'Failed' && st.reason) return st.reason;
   for (const c of st.initContainerStatuses || []) {
     const w = c.state?.waiting?.reason;
     if (w && w !== 'PodInitializing') return `Init:${w}`;
@@ -144,7 +148,6 @@ export function podStatus(pod, now = Date.now()) {
     const term = c.state?.terminated?.reason;
     if (w && (BAD.has(w) || !reason)) reason = w;
     if (term && !reason) reason = term === 'Completed' && st.phase === 'Succeeded' ? 'Completed' : term;
-    if (c.lastState?.terminated?.reason === 'OOMKilled' && w === 'CrashLoopBackOff') reason = 'CrashLoopBackOff';
   }
   if (reason) return reason;
   if (st.phase === 'Pending') {
@@ -160,7 +163,36 @@ export function podStatus(pod, now = Date.now()) {
   return st.phase || 'Unknown';
 }
 
+/**
+ * A pod whose phase is Failed or Succeeded is over for good: Kubernetes never
+ * restarts it (evicted, preempted, shut down with its node, a finished Job
+ * attempt). Its workload already runs a replacement, so it's history, not trouble.
+ */
+export function isTerminal(pod) {
+  const phase = pod.status?.phase;
+  return phase === 'Failed' || phase === 'Succeeded';
+}
+
+/** When a finished pod stopped: its latest timestamp (container exits, condition changes). */
+function finishedAt(pod) {
+  const st = pod.status || {};
+  const times = [...(st.containerStatuses || []).map((c) => t(c.state?.terminated?.finishedAt)), ...(st.conditions || []).map((c) => t(c.lastTransitionTime)), t(st.startTime), t(pod.metadata.creationTimestamp)].filter((x) => Number.isFinite(x));
+  return times.length ? Math.max(...times) : null;
+}
+
+const TERMINAL_WARN_MS = 15 * 60_000;
+
 export function podState(status, pod, now = Date.now()) {
+  if (isTerminal(pod)) {
+    // A Job run that finished is the normal end of it; anything else that ended
+    // shows as a warning for a while so it's seen, then fades out.
+    if (status === 'Completed' && pod.metadata.ownerReferences?.[0]?.kind === 'Job') return 'done';
+    const at = finishedAt(pod);
+    return at == null || now - at > TERMINAL_WARN_MS ? 'done' : 'warn';
+  }
+  // The cluster autoscaler usually adds a node for an unschedulable pod within a few
+  // minutes (a scale-up from zero often waits for one), so only then is it broken.
+  if (status === 'Unschedulable') return now - (t(pod.metadata.creationTimestamp) || now) > UNSCHEDULABLE_GRACE_MS ? 'bad' : 'pending';
   if (BAD.has(status) || status.startsWith('Init:') && status !== 'Init:PodInitializing') return 'bad';
   if (status === 'Running') return 'ok';
   if (status === 'Completed') return 'done';
@@ -185,7 +217,7 @@ export function mainContainerName(specContainers, workload) {
 }
 
 export function summarizePod(pod, metrics, now = Date.now()) {
-  const status = podStatus(pod, now);
+  const status = podStatus(pod);
   const state = podState(status, pod, now);
   const specs = new Map((pod.spec?.containers || []).map((c) => [c.name, c]));
   const m = metrics?.get(pod.metadata.name);
@@ -219,12 +251,16 @@ export function summarizePod(pod, metrics, now = Date.now()) {
   });
   const sum = (k) => containers.reduce((a, c) => a + (c[k] || 0), 0);
   const readyCount = containers.filter((c) => c.ready).length;
+  // Only a container with a memory limit can hit it: a sidecar without one (a
+  // proxy next to the app) mustn't count against the app's limit.
+  const memPcts = containers.filter((c) => c.mem != null && c.memLimit > 0).map((c) => c.mem / c.memLimit);
   return {
     name: pod.metadata.name,
     uid: pod.metadata.uid,
     service: workloadOf(pod),
     status,
     state,
+    terminal: isTerminal(pod),
     ready: readyCount === containers.length && containers.length > 0,
     readyText: `${readyCount}/${containers.length || (pod.spec?.containers || []).length}`,
     restarts,
@@ -238,6 +274,7 @@ export function summarizePod(pod, metrics, now = Date.now()) {
     mainContainer: mainContainerName(pod.spec?.containers, workloadOf(pod)),
     cpu: m ? sum('cpu') : null,
     mem: m ? sum('mem') : null,
+    memPct: memPcts.length ? Math.max(...memPcts) : null,
     cpuRequest: sum('cpuRequest'),
     cpuLimit: sum('cpuLimit'),
     memRequest: sum('memRequest'),
@@ -254,8 +291,9 @@ function hpaFor(name, hpas, scaledobjects) {
   const cpuCurrent = (h?.status?.currentMetrics || []).find((m) => m.resource?.name === 'cpu');
   const memMetric = (h?.spec?.metrics || []).find((m) => m.resource?.name === 'memory');
   const memCurrent = (h?.status?.currentMetrics || []).find((m) => m.resource?.name === 'memory');
-  const min = so?.spec?.minReplicaCount ?? h?.spec?.minReplicas ?? 1;
-  const max = so?.spec?.maxReplicaCount ?? h?.spec?.maxReplicas ?? min;
+  // KEDA's defaults are 0 and 100 (its own HPA says min 1: KEDA does 0 ↔ 1 itself).
+  const min = so ? so.spec?.minReplicaCount ?? 0 : h?.spec?.minReplicas ?? 1;
+  const max = so?.spec?.maxReplicaCount ?? h?.spec?.maxReplicas ?? (so ? 100 : min);
   const current = h?.status?.currentReplicas ?? null;
   const desired = h?.status?.desiredReplicas ?? null;
   const cpuTarget = cpuMetric?.resource?.target?.averageUtilization ?? null;
@@ -278,7 +316,7 @@ function hpaFor(name, hpas, scaledobjects) {
   };
 }
 
-export function serviceHealth(svc, now = Date.now()) {
+export function serviceHealth(svc) {
   const reasons = [];
   let health = 'healthy';
   const bump = (h) => {
@@ -301,6 +339,12 @@ export function serviceHealth(svc, now = Date.now()) {
   } else if (svc.rollingOut) {
     bump('deploying');
     reasons.push('Rolling out a new version');
+  }
+  // Kubernetes gave up waiting for the new pods (progressDeadlineSeconds): it
+  // won't finish by itself, so it's no longer "deploying".
+  if (svc.rolloutStuck) {
+    bump('degraded');
+    reasons.push("Rollout stuck: new pods didn't become ready in time");
   }
   for (const p of bad) {
     bump(svc.ready === 0 ? 'down' : 'degraded');
@@ -363,17 +407,21 @@ export function buildModel(raw, { podMetrics = new Map(), nodeMetrics = new Map(
   ];
   const services = workloads.map(({ d, kind }) => {
     const name = d.metadata.name;
-    const podList = (byService.get(name) || []).filter((p) => p.status !== 'Completed');
+    // Pods that finished long ago (evicted, preempted…) are left out; recent ones
+    // are listed but never count against the service's health.
+    const podList = (byService.get(name) || []).filter((p) => p.state !== 'done');
+    const live = podList.filter((p) => !p.terminal);
     const desired = d.spec?.replicas ?? 1;
     const st = d.status || {};
     const ready = st.readyReplicas || 0;
     const updated = st.updatedReplicas || 0;
     const rollingOut = (d.metadata.generation && st.observedGeneration < d.metadata.generation) || (updated < desired && (st.replicas || 0) > 0 && (st.replicas || 0) !== updated);
-    const memPcts = podList.map((p) => (p.mem != null && p.memLimit ? p.mem / p.memLimit : null)).filter((x) => x != null);
-    const cpuPcts = podList.map((p) => (p.cpu != null && (p.cpuLimit || p.cpuRequest) ? p.cpu / (p.cpuLimit || p.cpuRequest) : null)).filter((x) => x != null);
+    const rolloutStuck = (st.conditions || []).some((c) => c.type === 'Progressing' && c.status === 'False' && c.reason === 'ProgressDeadlineExceeded');
+    const memPcts = live.map((p) => p.memPct).filter((x) => x != null);
+    const cpuPcts = live.map((p) => (p.cpu != null && (p.cpuLimit || p.cpuRequest) ? p.cpu / (p.cpuLimit || p.cpuRequest) : null)).filter((x) => x != null);
     const container = d.spec?.containers?.find((c) => c.name === mainContainerName(d.spec?.containers, name)) || {};
     let recentRestarts = 0;
-    for (const p of podList) {
+    for (const p of live) {
       for (const c of p.containers) {
         const times = restartLedger.get(`${p.name}/${c.name}`) || [];
         recentRestarts += times.filter((x) => now - x < 15 * 60_000).length;
@@ -394,6 +442,7 @@ export function buildModel(raw, { podMetrics = new Map(), nodeMetrics = new Map(
       pods: podList.map((p) => ({ name: p.name, state: p.state, status: p.status })),
       restarts: podList.reduce((a, p) => a + p.restarts, 0),
       recentRestarts,
+      rolloutStuck,
       cpu: podList.some((p) => p.cpu != null) ? podList.reduce((a, p) => a + (p.cpu || 0), 0) : null,
       mem: podList.some((p) => p.mem != null) ? podList.reduce((a, p) => a + (p.mem || 0), 0) : null,
       memPct: memPcts.length ? Math.max(...memPcts) : null,
@@ -404,7 +453,7 @@ export function buildModel(raw, { podMetrics = new Map(), nodeMetrics = new Map(
       hosts: routes.filter((r) => workloadForK8sService(r.service) === name).map((r) => `${r.host}${r.path === '/' ? '' : r.path}`),
       createdAt: t(d.metadata.creationTimestamp),
     };
-    const { health, reasons } = serviceHealth(svc, now);
+    const { health, reasons } = serviceHealth(svc);
     svc.health = health;
     svc.reasons = reasons;
     delete svc.podList;
@@ -415,6 +464,8 @@ export function buildModel(raw, { podMetrics = new Map(), nodeMetrics = new Map(
   const nodes = (raw.nodes || []).map((n) => {
     const cond = (type) => (n.status?.conditions || []).find((c) => c.type === type);
     const ready = cond('Ready')?.status === 'True';
+    // When it stopped being ready; a node that never reported Ready counts from when it joined.
+    const notReadySince = ready ? null : t(cond('Ready')?.lastTransitionTime) ?? t(n.metadata.creationTimestamp);
     const pressure = ['MemoryPressure', 'DiskPressure', 'PIDPressure'].filter((ty) => cond(ty)?.status === 'True');
     const m = nodeMetrics.get(n.metadata.name);
     const cpuAlloc = cpuMilli(n.status?.allocatable?.cpu);
@@ -424,6 +475,7 @@ export function buildModel(raw, { podMetrics = new Map(), nodeMetrics = new Map(
     return {
       name: n.metadata.name,
       ready,
+      notReadySince,
       pressure,
       unschedulable: !!n.spec?.unschedulable,
       pool: n.metadata.labels?.['cloud.google.com/gke-nodepool'] || null,
@@ -437,7 +489,7 @@ export function buildModel(raw, { podMetrics = new Map(), nodeMetrics = new Map(
       mem,
       cpuPct: cpu != null && cpuAlloc ? cpu / cpuAlloc : null,
       memPct: mem != null && memAlloc ? mem / memAlloc : null,
-      pods: pods.filter((p) => p.node === n.metadata.name).length,
+      pods: pods.filter((p) => p.node === n.metadata.name && !p.terminal).length,
       createdAt: t(n.metadata.creationTimestamp),
       state: !ready ? 'bad' : pressure.length || n.spec?.unschedulable ? 'warn' : 'ok',
       message: !ready ? cond('Ready')?.message || 'Node is not ready' : pressure.length ? pressure.join(', ') : null,
@@ -522,6 +574,7 @@ export function summarizeEvent(e) {
     kind,
     name,
     count: e.count || 1,
-    source: e.source || null,
+    // Raw events carry { component, host } (demo mode sends them unslimmed): the UI prints this.
+    source: typeof e.source === 'string' ? e.source : e.source?.component || e.reportingComponent || null,
   };
 }

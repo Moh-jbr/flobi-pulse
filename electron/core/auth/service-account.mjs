@@ -2,7 +2,7 @@
 // exchange it for a short-lived access token. No Google client library needed.
 import { createSign, createPrivateKey } from 'node:crypto';
 import { form } from '../net/http.mjs';
-import { READ_SCOPES, PLATFORM_SCOPES } from './scopes.mjs';
+import { READ_SCOPES, PLATFORM_SCOPES, BILLING_SCOPES } from './scopes.mjs';
 
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 
@@ -60,6 +60,10 @@ export class ServiceAccountAuth {
     this.key = parseServiceAccountKey(keyText);
     this.kind = 'service-account';
     this.cache = new Map(); // purpose -> { token, expiresAt }
+    // purpose -> the token request under way: callers arriving meanwhile (14 informers
+    // at startup, a restart after sleep) share it instead of each asking Google.
+    this.inflight = new Map();
+    this.generation = 0; // bumped by invalidate(): answers to older requests aren't cached
   }
 
   get identity() {
@@ -71,35 +75,60 @@ export class ServiceAccountAuth {
     };
   }
 
-  /** @param {'read'|'platform'} purpose */
+  /** @param {'read'|'platform'|'billing'} purpose */
   async getToken(purpose = 'read') {
     const cached = this.cache.get(purpose);
     if (cached && cached.expiresAt - 60_000 > Date.now()) return cached.token;
-    let scopes = purpose === 'platform' ? PLATFORM_SCOPES : READ_SCOPES;
+    let pending = this.inflight.get(purpose);
+    if (!pending) {
+      pending = this._fetchToken(purpose, this.generation).finally(() => {
+        if (this.inflight.get(purpose) === pending) this.inflight.delete(purpose);
+      });
+      this.inflight.set(purpose, pending);
+    }
+    return pending;
+  }
+
+  async _fetchToken(purpose, generation) {
+    let scopes = purpose === 'platform' ? PLATFORM_SCOPES : purpose === 'billing' ? BILLING_SCOPES : READ_SCOPES;
     if (this.withoutRunScope) scopes = scopes.filter((s) => !s.endsWith('/run.readonly'));
     let res;
     try {
-      res = await form(TOKEN_URL, { grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion: signJwt({ ...this.key, scopes }) });
+      res = await this._exchange(scopes);
     } catch (e) {
       // If Google ever rejects the Cloud Run read-only scope, carry on without it
       // (Cloud Run status then shows as unavailable instead of blocking sign-in).
       if (!this.withoutRunScope && /invalid_scope/i.test(`${e.message} ${e.body || ''}`)) {
         this.withoutRunScope = true;
-        return this.getToken(purpose);
+        return this._fetchToken(purpose, generation);
       }
       throw e;
     }
     if (!res?.access_token) throw new Error('Google did not return an access token for the service account.');
     const entry = { token: res.access_token, expiresAt: Date.now() + (res.expires_in || 3600) * 1000 };
-    this.cache.set(purpose, entry);
+    if (generation === this.generation) this.cache.set(purpose, entry);
     return entry.token;
   }
 
-  invalidate() {
+  /** One token request to Google (its own method so tests can stand in for Google). */
+  _exchange(scopes) {
+    return form(TOKEN_URL, { grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion: signJwt({ ...this.key, scopes }) });
+  }
+
+  /**
+   * Forgets the tokens (one was rejected): the next getToken asks Google, even if a
+   * request was under way. Given the rejected token, it does nothing once that token
+   * has been replaced: when 14 informers get a 401 at once, the first one's refresh
+   * is shared instead of each starting its own.
+   */
+  invalidate(rejected) {
+    if (rejected && ![...this.cache.values()].some((e) => e.token === rejected)) return;
     this.cache.clear();
+    this.inflight.clear();
+    this.generation++;
   }
 
   async signOut() {
-    this.cache.clear();
+    this.invalidate(null);
   }
 }

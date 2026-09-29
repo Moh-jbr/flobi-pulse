@@ -14,10 +14,13 @@ import path from 'node:path';
 import os from 'node:os';
 import { json, download } from './core/net/http.mjs';
 import { configureGuard } from './core/net/guard.mjs';
-import { isNewer, pickAsset, parseSums, assetDigest, UPDATE_ASSET } from './core/update/release.mjs';
+import { isNewer, pickAsset, parseSums, assetDigest, UPDATE_ASSET, UPDATE_DIR_PREFIX, checkRetryDelay, isRateLimited } from './core/update/release.mjs';
+import { cleanStaleUpdates } from './core/update/cleanup.mjs';
 
 const execFileP = promisify(execFile);
 const HOUR = 60 * 60_000;
+/** While an update downloads or installs, a check must leave the status alone. */
+const BUSY = ['downloading', 'installing'];
 
 export class Updater {
   /**
@@ -28,6 +31,8 @@ export class Updater {
     this.repo = repo;
     this.onChange = onChange;
     this.quit = quit;
+    this.failures = 0; // failed checks in a row
+    this.retryAt = 0; // after a failed check: when the retry runs (background checks wait for it)
     this.state = { status: 'idle', current: app.getVersion(), releasesUrl: repo ? `https://github.com/${repo}/releases/latest` : null };
   }
 
@@ -48,12 +53,18 @@ export class Updater {
   start() {
     const reason = this.unsupported();
     if (reason) return this.set({ status: 'unsupported', error: reason });
+    this.stopped = false;
+    this.retryAt = 0; // stop() cancelled any pending retry
     configureGuard({ updateRepo: this.repo });
-    setTimeout(() => this.check(), 5_000);
+    cleanStaleUpdates().catch(() => {}); // leftovers of earlier updates
+    this.first = setTimeout(() => this.check(), 5_000);
     this.timer = setInterval(() => this.check(), HOUR);
   }
 
+  /** Cancels every timer: the first check, the hourly one and a pending retry (main calls this on quit). */
   stop() {
+    this.stopped = true;
+    clearTimeout(this.first);
     clearInterval(this.timer);
     clearTimeout(this.retry);
   }
@@ -63,41 +74,83 @@ export class Updater {
     if (this.state.status !== 'unsupported' && Date.now() - (this.lastCheck || 0) > maxAgeMs) this.check();
   }
 
+  /** The latest release (a method of its own so tests can stand in for GitHub). */
+  latestRelease() {
+    return json({ url: `https://api.github.com/repos/${this.repo}/releases/latest`, headers: { accept: 'application/vnd.github+json' } });
+  }
+
+  /** Streams a file to disk (a method of its own so tests can stand in for GitHub). */
+  download(opts) {
+    return download(opts);
+  }
+
+  /** The folder the app runs from, which the Windows installer writes to. */
+  installDir() {
+    return path.dirname(process.execPath);
+  }
+
   async check({ manual = false } = {}) {
-    if (['downloading', 'installing', 'unsupported'].includes(this.state.status)) return this.state;
+    if (this.stopped || ['downloading', 'installing', 'unsupported'].includes(this.state.status)) return this.state;
+    // After a failure the retry timer checks at retryAt; checking sooner in the background
+    // (focus, wake-up) would only spend the rate limit the whole office shares.
+    if (!manual && Date.now() < this.retryAt) return this.state;
     this.lastCheck = Date.now();
     clearTimeout(this.retry);
     if (manual) this.set({ status: 'checking', error: null });
     try {
-      const rel = await json({ url: `https://api.github.com/repos/${this.repo}/releases/latest`, headers: { accept: 'application/vnd.github+json' } });
+      const rel = await this.latestRelease();
+      this.failures = 0;
+      this.retryAt = 0;
+      // An install that started while this check was on its way keeps its status: turning
+      // "downloading" back into "available" let a second click start a second install.
+      if (this.stopped || BUSY.includes(this.state.status)) return this.state;
       const version = String(rel?.tag_name || '').replace(/^v/, '');
       const asset = pickAsset(rel, process.platform);
       if (!asset || !isNewer(version, this.state.current)) {
-        this.set({ status: 'idle', checkedAt: Date.now(), error: null, lastError: null });
+        this.set({ status: 'idle', checkedAt: Date.now(), error: null, lastError: null, retryAt: null });
       } else {
         this.release = rel;
         this.asset = asset;
-        this.set({ status: 'available', version, notes: String(rel.body || '').slice(0, 1200), size: asset.size || 0, checkedAt: Date.now(), error: null, lastError: null });
+        this.set({ status: 'available', version, notes: String(rel.body || '').slice(0, 1200), size: asset.size || 0, checkedAt: Date.now(), error: null, lastError: null, retryAt: null });
       }
     } catch (e) {
-      // Offline or rate-limited: try again in 2 minutes, and say so in Settings.
+      if (this.stopped) return this.state;
+      // Offline or rate-limited: try again later (GitHub's reset time when it gave one), and say so in Settings.
       console.warn('[update] check failed:', e.message);
-      this.retry = setTimeout(() => this.check(), 2 * 60_000);
-      this.set({ status: this.state.status === 'checking' ? 'idle' : this.state.status, lastError: e.message, error: manual ? `Couldn't check for updates: ${e.message}` : this.state.error });
+      const delay = checkRetryDelay(e, this.failures++);
+      this.retryAt = Date.now() + delay;
+      clearTimeout(this.retry);
+      this.retry = setTimeout(() => {
+        this.retryAt = 0;
+        this.check();
+      }, delay);
+      if (BUSY.includes(this.state.status)) return this.state;
+      const message = isRateLimited(e) ? 'GitHub is limiting update checks from this network for now' : e.message;
+      this.set({ status: this.state.status === 'checking' ? 'idle' : this.state.status, lastError: message, retryAt: this.retryAt, error: manual ? `Couldn't check for updates: ${message}` : this.state.error });
     }
     return this.state;
   }
 
   /** Download → verify → install → restart. Called when the user clicks the button. */
   async install() {
-    if (!['available', 'error'].includes(this.state.status) || !this.asset) return this.state;
+    // Claimed before the first await, so a second click can't start a second download
+    // and installer (on macOS, two swap scripts racing).
+    if (this.installing || !['available', 'error'].includes(this.state.status) || !this.asset) return this.state;
+    this.installing = true;
     const asset = this.asset;
+    let dir = null;
+    let handedOff = false;
     try {
-      const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'flobi-pulse-update-'));
-      const file = path.join(dir, asset.name);
       this.set({ status: 'downloading', progress: 0, error: null });
+      // Installed for all users (Program Files): the installer would need an administrator,
+      // and saying no to that prompt would leave the app closed. Say so before downloading.
+      if (process.platform === 'win32' && !(await canWrite(this.installDir()))) {
+        throw new Error(`Flobi Pulse is installed for all users (in ${this.installDir()}), so it can't update itself. Download the new installer from the releases page and run it.`);
+      }
+      dir = await fs.mkdtemp(path.join(os.tmpdir(), UPDATE_DIR_PREFIX));
+      const file = path.join(dir, asset.name);
       let shown = 0;
-      const { sha256 } = await download({
+      const { sha256 } = await this.download({
         url: asset.browser_download_url,
         file,
         onProgress: (bytes, total) => {
@@ -109,10 +162,17 @@ export class Updater {
       if (!expected) throw new Error('This release has no checksum for the download, so it was not installed.');
       if (expected !== sha256) throw new Error('The download was damaged (checksum mismatch). Try again.');
       this.set({ status: 'installing', progress: 1 });
-      await INSTALL[process.platform](file, dir);
+      const { keepDir = false } = (await INSTALL[process.platform](file, dir)) || {};
+      handedOff = true;
+      if (!keepDir) await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
       this.quit();
     } catch (e) {
       this.set({ status: 'error', error: e.message });
+    } finally {
+      if (!handedOff) {
+        if (dir) await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+        this.installing = false;
+      }
     }
     return this.state;
   }
@@ -122,16 +182,60 @@ export class Updater {
     const list = (this.release?.assets || []).find((a) => a.name === 'SHA256SUMS.txt');
     if (!list) return null;
     const file = path.join(dir, 'SHA256SUMS.txt');
-    await download({ url: list.browser_download_url, file, maxBytes: 64 * 1024 });
+    await this.download({ url: list.browser_download_url, file, maxBytes: 64 * 1024 });
     return parseSums(await fs.readFile(file, 'utf8')).get(name) || null;
+  }
+}
+
+/**
+ * Resolves once the OS has started the child. Rejects (with `why`) when it couldn't,
+ * e.g. an antivirus quarantined or locked the file, so the app keeps running.
+ */
+/**
+ * Starts a detached process (`start` calls spawn) and resolves once it runs. Node reports one that
+ * can't start in two ways: an 'error' event (a missing file, no permission), or by throwing right
+ * away (on Windows, a file that isn't a program or one an antivirus blocked: "spawn UNKNOWN").
+ * Either way the caller gets the same plain message: "<why> (<code>)."
+ */
+export function started(why, start) {
+  const fail = (e) => new Error(`${why} (${e?.code || e?.message || e}).`);
+  let child;
+  try {
+    child = start();
+  } catch (e) {
+    return Promise.reject(fail(e));
+  }
+  return new Promise((resolve, reject) => {
+    child.on('error', () => {}); // an error after it started must not crash the app
+    child.once('error', (e) => reject(fail(e)));
+    child.once('spawn', () => {
+      child.unref();
+      resolve();
+    });
+  });
+}
+
+/** Whether this process may write to `dir`. fs.access ignores Windows permissions (ACLs), so it tries. */
+async function canWrite(dir) {
+  const probe = path.join(dir, `.flobi-pulse-write-test-${process.pid}`);
+  try {
+    await fs.writeFile(probe, '');
+    await fs.rm(probe, { force: true });
+    return true;
+  } catch {
+    return false;
   }
 }
 
 const INSTALL = {
   // The NSIS installer reinstalls silently (/S) into the folder the user chose the
-  // first time, then starts the app again (--force-run).
+  // first time, then starts the app again (--force-run). install() has already
+  // checked that this folder is writable.
   async win32(file) {
-    spawn(file, ['/S', '--updated', '--force-run'], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+    // Quit only once Windows has really started the installer: if an antivirus blocked
+    // the (unsigned) file, the app would otherwise close without updating.
+    await started("Windows didn't start the installer (an antivirus may have blocked it). Download it from the releases page instead", () => spawn(file, ['/S', '--updated', '--force-run'], { detached: true, stdio: 'ignore', windowsHide: true }));
+    return { keepDir: true }; // it runs from the download folder; cleaned at a later start
   },
 
   // Unzip the new .app next to the current one; once this process has exited, a
@@ -160,7 +264,7 @@ const INSTALL = {
       '/usr/bin/xattr -dr com.apple.quarantine "$DEST" 2>/dev/null',
       '/usr/bin/open "$DEST"',
     ].join('\n');
-    spawn('/bin/sh', ['-c', script], { detached: true, stdio: 'ignore', env: { ...process.env, DEST: bundle, STAGED: staged } }).unref();
+    await started("Couldn't start the update", () => spawn('/bin/sh', ['-c', script], { detached: true, stdio: 'ignore', env: { ...process.env, DEST: bundle, STAGED: staged } }));
   },
 
   // An AppImage is one file: swap it (the running copy stays readable until exit) and relaunch.

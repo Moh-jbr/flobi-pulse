@@ -7,12 +7,14 @@
 //  • Following turns back on only once you've scrolled away AND come back to the
 //    newest rows. (Re-following as soon as the list was near the edge caught the
 //    first few pixels of every smooth scroll and snapped it back.)
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { cx } from './ui.jsx';
 
 const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ']);
 
-export default function VirtualList({ items, rowHeight = 30, renderRow, getKey, follow = false, onFollowChange, overscan = 10, className, header, empty, reverse = false, onScrollState }) {
+// getKey(item, index) gives each row a stable React key (so a row keeps its DOM node, hover and
+// focus while the list scrolls or grows); without it, rows use the key renderRow put on them.
+export default function VirtualList({ items, rowHeight = 30, renderRow, getKey, follow = false, onFollowChange, overscan = 10, className, header, empty, reverse = false }) {
   const ref = useRef(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [height, setHeight] = useState(600);
@@ -96,7 +98,6 @@ export default function VirtualList({ items, rowHeight = 30, renderRow, getKey, 
         onFollowChange?.(true);
       }
     }
-    onScrollState?.({ atEdge: dist < 4 });
   };
 
   // Never render more than about a screenful, even if the layout is off.
@@ -104,7 +105,10 @@ export default function VirtualList({ items, rowHeight = 30, renderRow, getKey, 
   const start = Math.max(0, Math.floor((scrollTop - headerH) / rowHeight) - overscan);
   const end = Math.min(count, Math.ceil((scrollTop - headerH + viewH) / rowHeight) + overscan);
   const rows = [];
-  for (let i = start; i < end; i++) rows.push(renderRow(items[i], i));
+  for (let i = start; i < end; i++) {
+    const row = renderRow(items[i], i);
+    rows.push(getKey ? <Fragment key={getKey(items[i], i)}>{row}</Fragment> : row);
+  }
 
   return (
     // No position class here: callers pass `absolute inset-0`, and a `relative`

@@ -3,10 +3,10 @@
 // the Cloud SQL Admin API, Sentry and Cloudflare. Cloud Monitoring is not used
 // (it's billed per read), so failed requests are counts, not percentages.
 // Every source is optional; a failing one becomes a note.
-import { normalizeEntry } from './normalize.mjs';
+import { normalizeEntry, workloadFromPodName } from './normalize.mjs';
 import { ErrorBook } from './errors.mjs';
 import { bucketPeriod } from './series.mjs';
-import { shortName, DB_CONN_ERROR } from './log-parse.mjs';
+import { shortName, DB_CONN_ERROR, isStackFrame } from './log-parse.mjs';
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -14,7 +14,7 @@ const iso = (ms) => new Date(ms).toISOString();
 
 export function serviceFromObject(kind, name) {
   if (!name) return null;
-  if (kind === 'Pod') return name.replace(/-[a-z0-9]{8,10}-[a-z0-9]{5}$/, '').replace(/-\d+$/, '');
+  if (kind === 'Pod') return workloadFromPodName(name) || name;
   if (kind === 'ReplicaSet') return name.replace(/-[a-z0-9]{8,10}$/, '');
   if (kind === 'HorizontalPodAutoscaler') return name.replace(/-hpa$/, '').replace(/^keda-hpa-/, '');
   return name;
@@ -78,6 +78,60 @@ function terminationReason(lt) {
   return lt.reason;
 }
 
+/** How long something really lasted, for incident details: "over 12 min", or "within a minute". */
+const lasting = (ms, word = 'over') => (ms < MIN ? 'within a minute' : `${word} ${fmtDuration(ms)}`);
+
+/** The first and last of `times` inside an episode: how long it really lasted, whatever the bucket size. */
+function realSpan(times, ep) {
+  let start = Infinity;
+  let end = -Infinity;
+  for (const t of times) {
+    if (t < ep.start || t >= ep.end) continue;
+    if (t < start) start = t;
+    if (t > end) end = t;
+  }
+  return start <= end ? { start, end } : { start: ep.start, end: ep.end };
+}
+
+/** Total length of possibly overlapping [start, end] intervals (several incidents, one outage). */
+export function unionMs(intervals) {
+  let total = 0;
+  let cur = null;
+  for (const [start, end] of [...intervals].sort((a, b) => a[0] - b[0])) {
+    if (cur && start <= cur[1]) cur[1] = Math.max(cur[1], end);
+    else {
+      if (cur) total += cur[1] - cur[0];
+      cur = [start, end];
+    }
+  }
+  return cur ? total + cur[1] - cur[0] : total;
+}
+
+/**
+ * How many times Kubernetes events happened. An Event object is exported again each time its
+ * count goes up, so it's each object's growth in count (its first export counting as one),
+ * not the sum of the exported counts.
+ */
+export function eventOccurrences(events) {
+  const byObject = new Map();
+  for (const e of [...events].sort((a, b) => (a.t ?? a.ts) - (b.t ?? b.ts))) {
+    const key = e.uid || `${e.objectKind}/${e.objectName}/${e.reason}/${e.message}`;
+    const count = Number(e.count) || 1;
+    const seen = byObject.get(key);
+    if (!seen) byObject.set(key, { first: count, max: count });
+    else seen.max = Math.max(seen.max, count);
+  }
+  let n = 0;
+  for (const { first, max } of byObject.values()) n += Math.max(1, max - first + 1);
+  return n;
+}
+
+/** The part of an RFC 3339 timestamp below the millisecond, in nanoseconds (0 when there's none). */
+function subMs(timestamp) {
+  const m = /\.(\d+)/.exec(timestamp || '');
+  return m ? Number(m[1].slice(3, 9).padEnd(6, '0')) : 0;
+}
+
 /** Merge [t, t+period) buckets that are within `gap` of each other into episodes. */
 export function episodes(points, period, isHot, gapBuckets = 1) {
   const out = [];
@@ -113,6 +167,32 @@ const EVENT_TITLES = {
   NetworkNotReady: 'Pod network not ready',
 };
 
+// The most entries one recap reads (Google pages them 1,000 at a time).
+const MAX_ERRORS_READ = 2000;
+const MAX_5XX_READ = 5000;
+
+/**
+ * The Cloud Logging filters behind the recap, for [since, until). The past-week load on start
+ * (backfill.mjs) reads the same ones, a day at a time.
+ * @returns {{events: string, errors: string, failed: string, sql: string}}
+ */
+export function recapFilters({ projectId, namespace: ns, since, until }) {
+  const range = [`timestamp>="${iso(since)}"`, `timestamp<"${iso(until)}"`];
+  return {
+    events: [
+      `logName="projects/${projectId}/logs/events"`,
+      ...range,
+      `(jsonPayload.involvedObject.namespace="${ns}" OR jsonPayload.involvedObject.kind="Node")`,
+      '(jsonPayload.type="Warning" OR jsonPayload.reason=("ScalingReplicaSet" OR "SuccessfulRescale" OR "Killing" OR "Evicted" OR "NodeNotReady" OR "Rebooted" OR "OOMKilling"))',
+    ].join(' AND '),
+    // Stack frames ("    at Foo (…)") are entries of their own in GKE: leave them out, or a few
+    // stack traces fill the entry cap and push out the errors themselves.
+    errors: [`resource.type="k8s_container"`, `resource.labels.namespace_name="${ns}"`, 'severity>=ERROR', 'NOT textPayload=~"^ +at "', ...range].join(' AND '),
+    failed: ['resource.type="http_load_balancer"', 'httpRequest.status>=500', ...range].join(' AND '),
+    sql: ['resource.type="cloudsql_database"', 'severity>=ERROR', ...range].join(' AND '),
+  };
+}
+
 /**
  * @param {object} o
  * @param {number} o.since
@@ -128,7 +208,9 @@ const EVENT_TITLES = {
  * @param {import('../sources/sentry.mjs').SentryClient} [o.sentry]
  * @param {import('../sources/cloudflare.mjs').CloudflareClient} [o.cloudflare]
  * @param {{id:string,name:string}[]} [o.zones] Cloudflare zones
- * @param {Record<string,number>} [o.knownErrors]
+ * @param {Record<string,number>} [o.knownErrors] error fingerprints this machine already knows
+ * @param {Record<string,number>} [o.legacyKnownErrors] the same, saved by app versions ≤ 1.0.3
+ * @param {(pod:string, container:string)=>string|null} [o.podToService] a pod's workload (default: from its name)
  */
 export async function buildRecap(o) {
   const until = o.until || Date.now();
@@ -138,8 +220,6 @@ export async function buildRecap(o) {
     since = until - 30 * 24 * HOUR;
     notes.push('Google keeps logs for 30 days, so this recap starts 30 days ago.');
   }
-  const period = bucketPeriod(until - since);
-  const ns = o.namespace;
 
   const safe = (label, p) =>
     p.catch((e) => {
@@ -147,18 +227,7 @@ export async function buildRecap(o) {
       return null;
     });
 
-  const eventsFilter = [
-    `logName="projects/${o.projectId}/logs/events"`,
-    `timestamp>="${iso(since)}"`,
-    `timestamp<"${iso(until)}"`,
-    `(jsonPayload.involvedObject.namespace="${ns}" OR jsonPayload.involvedObject.kind="Node")`,
-    '(jsonPayload.type="Warning" OR jsonPayload.reason=("ScalingReplicaSet" OR "SuccessfulRescale" OR "Killing" OR "Evicted" OR "NodeNotReady" OR "Rebooted" OR "OOMKilling"))',
-  ].join(' AND ');
-  const errorsFilter = [`resource.type="k8s_container"`, `resource.labels.namespace_name="${ns}"`, 'severity>=ERROR', `timestamp>="${iso(since)}"`, `timestamp<"${iso(until)}"`].join(' AND ');
-  const lbFilter = ['resource.type="http_load_balancer"', 'httpRequest.status>=500', `timestamp>="${iso(since)}"`, `timestamp<"${iso(until)}"`].join(' AND ');
-  const sqlFilter = ['resource.type="cloudsql_database"', 'severity>=ERROR', `timestamp>="${iso(since)}"`, `timestamp<"${iso(until)}"`].join(' AND ');
-  const MAX_ERRORS = 2000;
-  const MAX_5XX = 5000;
+  const { events: eventsFilter, errors: errorsFilter, failed: lbFilter, sql: sqlFilter } = recapFilters({ projectId: o.projectId, namespace: o.namespace, since, until });
 
   const sqlOps = async () => {
     // The instances the live view found (they can live in another project), else our project's own.
@@ -171,17 +240,41 @@ export async function buildRecap(o) {
     Promise.all([
       o.logging.listAll({ filter: sqlFilter, orderBy: 'timestamp desc', max: 1000 }),
       ...(o.sqlLogProjects || []).map(({ logging, project }) => logging.listAll({ project, filter: sqlFilter, orderBy: 'timestamp desc', max: 1000 }).catch(() => [])),
-    ]).then((lists) => lists.flat());
+    ]).then((lists) => {
+      const out = lists.flat();
+      if (lists.some((l) => l?.truncated)) Object.defineProperty(out, 'truncated', { value: true });
+      return out;
+    });
 
   const [eventsRaw, errorRaw, lbRaw, sqlLogs, ops, sentryIssues, cfHosts] = await Promise.all([
     o.logging ? safe('Kubernetes events', o.logging.listAll({ filter: eventsFilter, orderBy: 'timestamp asc', max: 3000 })) : null,
-    o.logging ? safe('Error logs', o.logging.listAll({ filter: errorsFilter, orderBy: 'timestamp desc', max: MAX_ERRORS })) : null,
-    o.logging ? safe('Failed requests', o.logging.listAll({ filter: lbFilter, orderBy: 'timestamp desc', max: MAX_5XX })) : null,
+    o.logging ? safe('Error logs', o.logging.listAll({ filter: errorsFilter, orderBy: 'timestamp desc', max: MAX_ERRORS_READ })) : null,
+    o.logging ? safe('Failed requests', o.logging.listAll({ filter: lbFilter, orderBy: 'timestamp desc', max: MAX_5XX_READ })) : null,
     o.logging ? safe('Database logs', readSqlLogs()) : null,
     o.cloudsql ? safe('Cloud SQL', sqlOps()) : null,
     o.sentry?.configured ? safe('Sentry', o.sentry.issuesSince(since)) : null,
     o.cloudflare?.configured && o.zones?.length ? safe('Cloudflare', o.cloudflare.errorsByHost(o.zones, Math.max(since, until - 24 * HOUR), until).then((r) => r.zones)) : null,
   ]);
+  return recapFromData({ ...o, since, until }, { eventsRaw, errorRaw, lbRaw, sqlLogs, ops, sentryIssues, cfHosts }, notes);
+}
+
+/**
+ * The recap from data already read: buildRecap() reads it, and the past-week load on start
+ * passes what it read for each day (with its own caps). No reads here. A source that wasn't
+ * read is null. `o.caps` ({ errors, failed }) are the most entries that were asked for.
+ */
+export function recapFromData(o, data = {}, notes = []) {
+  const { since, until } = o;
+  const period = bucketPeriod(until - since);
+  const ns = o.namespace;
+  const MAX_ERRORS = o.caps?.errors || MAX_ERRORS_READ;
+  const MAX_5XX = o.caps?.failed || MAX_5XX_READ;
+  const { eventsRaw = null, errorRaw = null, lbRaw = null, sqlLogs = null, ops = null, sentryIssues = null, cfHosts = null } = data;
+
+  // listAll stops early when Google's search is slow (it pages through empty results for a
+  // long range): say which parts may be missing something rather than quietly showing less.
+  const slow = [['Kubernetes events', eventsRaw], ['error logs', errorRaw], ['failed requests', lbRaw], ['database logs', sqlLogs]].filter(([, list]) => list?.truncated).map(([label]) => label);
+  if (slow.length) notes.push(`Google's log search took too long for ${slow.join(', ')}, so ${slow.length > 1 ? 'those parts' : 'that part'} may be incomplete.`);
 
   const incidents = [];
   const deploys = [];
@@ -234,8 +327,12 @@ export async function buildRecap(o) {
       if (!exact) restartsExact = false;
       const evs = evFor(svc, ep.start - 10 * MIN, ep.end + 5 * MIN);
       const text = evs.map((e) => `${e.reason} ${e.message}`).join('\n');
+      // A node's out-of-memory kill names no pod: it counts when it hit a node this service's
+      // pods were crashing on (their events say which), just before one of those crashes.
+      const hosts = new Set(evs.map((e) => e.host).filter(Boolean));
+      const nodeOom = hosts.size > 0 && events.some((e) => e.reason === 'OOMKilling' && e.objectKind === 'Node' && hosts.has(e.objectName) && ep.points.some((p) => e.at >= p.t - 3 * MIN && e.at <= p.t + 30_000));
       let reason = ep.points.find((p) => p.reason === 'out of memory')?.reason || null;
-      if (!reason && /OOMKill|out of memory|OOMKilled/i.test(text)) reason = 'out of memory';
+      if (!reason && (/OOMKill|out of memory|OOMKilled/i.test(text) || nodeOom)) reason = 'out of memory';
       else if (!reason && /Liveness probe failed/i.test(text)) reason = 'liveness probe failed';
       else if (!reason && /Back-off restarting failed container|BackOff/i.test(text)) reason = 'crash loop';
       if (!reason) reason = ep.points.find((p) => p.reason)?.reason || null;
@@ -258,7 +355,7 @@ export async function buildRecap(o) {
   const failed = (lbRaw || []).map((e) => normalizeEntry(e, { namespace: ns })).filter((r) => r.kind === 'request');
   if (lbRaw && lbRaw.length >= MAX_5XX) notes.push(`More than ${MAX_5XX.toLocaleString()} requests failed; the recap looked at the most recent ${MAX_5XX.toLocaleString()}.`);
   const failedRequests = failed.length;
-  let outageMs = 0;
+  const outages = []; // [start, end] of critical incidents; they often overlap (one outage, several services)
   const failedBySvc = new Map();
   for (const r of failed) {
     const svc = r.service || r.host || 'unknown';
@@ -275,23 +372,25 @@ export async function buildRecap(o) {
     );
     for (const ep of episodes(buckets, period, (b) => b.v >= hot5xx)) {
       const n = ep.points.reduce((a, b) => a + b.v, 0);
-      const dur = ep.end - ep.start;
-      const severity = n >= 100 || dur >= 5 * MIN ? 'critical' : 'warning';
-      if (severity === 'critical') outageMs += dur;
       const inEp = list.filter((r) => r.ts >= ep.start && r.ts < ep.end);
+      // The failures' own first and last time: a bucket can be an hour long.
+      const { start, end } = realSpan(inEp.map((r) => r.ts), ep);
+      const dur = end - start;
+      const severity = n >= 100 || dur >= 5 * MIN ? 'critical' : 'warning';
+      if (severity === 'critical') outages.push([start, end]);
       const why = {};
       for (const r of inEp) if (r.statusDetails) why[r.statusDetails] = (why[r.statusDetails] || 0) + 1;
       const top = Object.entries(why).sort((a, b) => b[1] - a[1])[0]?.[0];
       incidents.push({
-        id: `5xx:${svc}:${ep.start}`,
+        id: `5xx:${svc}:${start}`,
         kind: 'http',
         severity,
         service: svc,
         title: `${shortName(svc)}: ${n.toLocaleString()} failed requests`,
-        detail: `5xx errors over ${fmtDuration(dur)}${top ? ` · mostly ${LB_DETAILS[top] || top.replace(/_/g, ' ')}` : ''}`,
-        start: ep.start,
-        end: ep.end,
-        view: { to: 'logs', service: svc, from: ep.start - 5 * MIN, until: ep.end + 5 * MIN },
+        detail: `5xx errors ${lasting(dur)}${top ? ` · mostly ${LB_DETAILS[top] || top.replace(/_/g, ' ')}` : ''}`,
+        start,
+        end,
+        view: { to: 'logs', service: svc, from: start - 5 * MIN, until: end + 5 * MIN },
       });
     }
   }
@@ -314,7 +413,7 @@ export async function buildRecap(o) {
   for (const [key, list] of grouped) {
     const [svc, reason] = key.split('|');
     for (const ep of episodes(list.map((e) => ({ ...e, t: e.at })), 60, () => true, 30)) {
-      const count = ep.points.reduce((a, e) => a + (e.count || 1), 0);
+      const count = eventOccurrences(ep.points);
       const isNode = svc.startsWith('node/');
       incidents.push({
         id: `event:${key}:${ep.start}`,
@@ -366,11 +465,46 @@ export async function buildRecap(o) {
   }
 
   // ── 5. Errors: spikes and brand-new error types ───────────────────────────
-  const errLines = (errorRaw || []).map((raw) => normalizeEntry(raw, { namespace: ns })).filter((l) => l.kind === 'log');
+  // Service names as the live view has them (the workload, also for pods that are gone),
+  // oldest first so each "TypeError: …" line comes right after the error it belongs to.
+  const logCtx = { namespace: ns, podToService: o.podToService || workloadFromPodName };
+  const errLines = (errorRaw || [])
+    .map((raw, i) => ({ line: normalizeEntry(raw, logCtx), sub: subMs(raw.timestamp), i }))
+    .filter((x) => x.line.kind === 'log')
+    .sort((a, b) => a.line.ts - b.line.ts || a.sub - b.sub || b.i - a.i) // ties: the reverse of newest-first
+    .map((x) => x.line);
   if (errorRaw && errorRaw.length >= MAX_ERRORS) notes.push(`There were more than ${MAX_ERRORS.toLocaleString()} error lines; spikes are based on the most recent ${MAX_ERRORS.toLocaleString()}.`);
-  const totalErrors = errLines.length;
+  const isEmpty = (m) => !m || !Object.keys(m).length;
+  // Nothing to compare with while the new map is empty: a fresh install, or the first run
+  // after the update from 1.0.3 (the error book treats both as a baseline).
+  const firstRun = isEmpty(o.knownErrors);
+  const book = new ErrorBook({ known: o.knownErrors || {}, legacyKnown: o.legacyKnownErrors || null, now: until });
+  // One error is one line: its stack frames and the exception line under a Nest error are
+  // part of it, as on the Errors page.
+  const errors = [];
+  const newGroups = [];
+  const connErrs = [];
+  const lastWasDb = new Map(); // pod → whether its latest error said it couldn't reach the database
+  for (const line of errLines) {
+    const text = line.text || '';
+    const r = book.add(line);
+    if (r) {
+      errors.push(line);
+      if (r.isNewGroup) newGroups.push(r.group);
+      const db = DB_CONN_ERROR.test(text);
+      if (db) connErrs.push(line);
+      lastWasDb.set(line.pod, db);
+    } else if (!isStackFrame(text) && DB_CONN_ERROR.test(text)) {
+      if (line.level === 'WARN') connErrs.push(line); // a plain stderr line, as the live view counts it
+      else if (line.level === 'ERROR' && lastWasDb.get(line.pod) === false) {
+        connErrs.push(line); // the exception under an error that didn't say what failed
+        lastWasDb.set(line.pod, true);
+      }
+    }
+  }
+  const totalErrors = errors.length;
   const errBySvc = new Map();
-  for (const l of errLines) {
+  for (const l of errors) {
     const svc = l.service || l.container || 'unknown';
     if (!errBySvc.has(svc)) errBySvc.set(svc, []);
     errBySvc.get(svc).push(l.ts);
@@ -382,26 +516,20 @@ export async function buildRecap(o) {
     const threshold = Math.max(20 * (period / 60), 5 * median);
     for (const ep of episodes(pts, period, (p) => p.v >= threshold)) {
       const n = Math.round(ep.points.reduce((a, p) => a + p.v, 0));
+      const { start, end } = realSpan(times, ep);
       incidents.push({
-        id: `errspike:${svc}:${ep.start}`,
+        id: `errspike:${svc}:${start}`,
         kind: 'errors',
         severity: 'warning',
         service: svc,
         title: `Error spike in ${shortName(svc)}`,
-        detail: `${n.toLocaleString()} errors in ${fmtDuration(ep.end - ep.start)} (usually ~${Math.round(median)} per ${fmtDuration(period * 1000)})`,
-        start: ep.start,
-        end: ep.end,
-        view: { to: 'logs', service: svc, level: 'ERROR', from: ep.start - 2 * MIN, until: ep.end + 2 * MIN },
+        detail: `${n.toLocaleString()} errors ${lasting(end - start, 'in')} (usually ~${Math.round(median)} per ${fmtDuration(period * 1000)})`,
+        start,
+        end,
+        view: { to: 'logs', service: svc, level: 'ERROR', from: start - 2 * MIN, until: end + 2 * MIN },
       });
     }
   }
-  const book = new ErrorBook({ known: o.knownErrors || {} });
-  const newGroups = [];
-  for (const line of errLines) {
-    const r = book.add(line);
-    if (r?.isNewGroup) newGroups.push(r.group);
-  }
-  const firstRun = !o.knownErrors || Object.keys(o.knownErrors).length === 0;
   if (newGroups.length && !firstRun) {
     incidents.push({
       id: `newerrors:${since}`,
@@ -421,21 +549,20 @@ export async function buildRecap(o) {
   }
 
   // ── 6. Database ───────────────────────────────────────────────────────────
-  // a) Services that couldn't reach Postgres (from their own error logs)
-  const connErrs = errLines.filter((l) => DB_CONN_ERROR.test(l.text || ''));
+  // a) Services that couldn't reach Postgres (from their own error logs, collected above)
   for (const ep of clusters(connErrs.map((l) => ({ t: l.ts, service: l.service || l.container })), 5 * MIN)) {
     if (ep.points.length < 5) continue;
     const dur = ep.end - ep.start;
     const svcs = [...new Set(ep.points.map((p) => p.service))];
     const severity = ep.points.length >= 20 || dur >= 3 * MIN ? 'critical' : 'warning';
-    if (severity === 'critical') outageMs += dur;
+    if (severity === 'critical') outages.push([ep.start, ep.end]);
     incidents.push({
       id: `sqlreach:${ep.start}`,
       kind: 'database',
       severity,
       service: null,
       title: "Services couldn't reach the database",
-      detail: `${ep.points.length} connection errors over ${fmtDuration(dur)} · ${svcs.slice(0, 4).map(shortName).join(', ')}`,
+      detail: `${ep.points.length} connection errors ${lasting(dur)} · ${svcs.slice(0, 4).map(shortName).join(', ')}`,
       start: ep.start,
       end: ep.end,
       view: { to: 'logs', level: 'ERROR', from: ep.start - 2 * MIN, until: ep.end + 2 * MIN },
@@ -541,7 +668,7 @@ export async function buildRecap(o) {
       deploys: deploys.length,
       requests: null, // total request volume would need Cloud Monitoring (paid)
       failedRequests: lbRaw ? failedRequests : null,
-      outageMinutes: Math.round(outageMs / MIN),
+      outageMinutes: Math.round(unionMs(outages) / MIN),
       frontendIssues: (sentryIssues || []).length,
     },
     incidents,

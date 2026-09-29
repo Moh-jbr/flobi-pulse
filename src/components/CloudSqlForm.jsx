@@ -1,12 +1,12 @@
 // Where the database is: a Cloud SQL connection name ("project:region:instance").
 // Only needed when the instance is in another Google Cloud project and no pod
 // names it in its own settings.
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useStore, invoke, setState } from '../lib/store.js';
 import { Button, TextField } from './ui.jsx';
 import Icon from './icons.jsx';
+import { cleanError as clean } from '../views/Traffic.jsx';
 
-const clean = (e) => String(e?.message || e).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
 const VALID = /^[a-z][a-z0-9-]{4,28}[a-z0-9]:[a-z]+-[a-z]+[0-9]+:[a-z][a-z0-9-]{0,96}[a-z0-9]$/;
 
 export default function CloudSqlForm({ compact = false }) {
@@ -16,6 +16,8 @@ export default function CloudSqlForm({ compact = false }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [done, setDone] = useState(false);
+  // Set at once (state only updates on the next render): a second click or Enter while saving does nothing.
+  const saving = useRef(false);
   useEffect(() => setValue(saved), [saved]);
 
   const list = value
@@ -26,6 +28,8 @@ export default function CloudSqlForm({ compact = false }) {
   const dirty = list.join(', ') !== saved;
 
   const save = async () => {
+    if (saving.current || !dirty || invalid) return;
+    saving.current = true;
     setBusy(true);
     setError(null);
     setDone(false);
@@ -35,6 +39,7 @@ export default function CloudSqlForm({ compact = false }) {
     } catch (e) {
       setError(clean(e));
     }
+    saving.current = false;
     setBusy(false);
   };
 
@@ -45,7 +50,8 @@ export default function CloudSqlForm({ compact = false }) {
           mono
           value={value}
           onChange={(v) => (setValue(v), setDone(false))}
-          onKeyDown={(e) => e.key === 'Enter' && dirty && !invalid && save()}
+          onKeyDown={(e) => e.key === 'Enter' && save()}
+          readOnly={busy}
           placeholder="project:region:instance"
           aria-label="Cloud SQL connection name"
           className="flex-1"

@@ -233,6 +233,92 @@ Cost: $0.
 
 ---
 
+## 3c. Costs page (optional)
+
+The **Costs** page (Billing → Costs) adds up what the platform costs each month. Each
+vendor is optional: what isn't set up says so on the page, with these steps.
+
+**Google Cloud.** Google has no API for spend, so the app reads the billing export
+Google Cloud writes into BigQuery. This adds one dataset (Google fills it) and one
+read-only role on that dataset. Nothing else changes.
+
+1. Google Cloud console → **Billing** → pick the billing account → **Billing export**
+   → **BigQuery export** → **Standard usage cost** → **Edit settings**. Pick a project
+   linked to that billing account and create a dataset, e.g. `billing_export`, in a
+   **multi-region location (US or EU)**: then it also brings in last month. It takes a
+   Billing Account Administrator (or Costs Manager) with BigQuery User on the project.
+2. Give the viewer service account read access to **that dataset only**: BigQuery →
+   the dataset → **Sharing → Permissions → Add principal** →
+   `flobi-pulse-viewer@flobi-prod-2026.iam.gserviceaccount.com` → role **BigQuery Data
+   Viewer** → Save. No project-wide role and no BigQuery Job User: the app never runs
+   queries.
+3. Within a few hours a table named `gcp_billing_export_v1_<billing account>` appears
+   (last month fills in over up to five days). In the app: **Settings → Costs →
+   Google Cloud**, paste it as `project.dataset.table` and **Save**. Until Google has
+   caught up, the Costs page says how far it has got and leaves Google Cloud out of the
+   totals, rather than showing part of a month as the whole.
+
+If the page says the BigQuery API is off, it can be turned on in the service
+account's project (APIs & Services → BigQuery API → Enable). That's free, but it is a
+project setting, so it's your call.
+
+Cost: **$0**. The app reads the table with BigQuery's free table preview
+(`tabledata.list`, the API behind the console's *Preview* tab, which Google documents
+as free and outside the quotas) and its metadata (`tables.get`), never a query or a
+job, which BigQuery would bill; the read-only guard refuses those and any other table.
+The first read goes through the last six months once, a day at a time, and keeps
+only the sums on this computer; after that each check reads only what changed. The
+export itself is a few MB a month in your dataset, inside BigQuery's free 10 GiB of
+storage.
+
+**Cloudflare.** Edit the token from step 3 (My Profile → API Tokens) and add
+**Account → Billing → Read**. Plans come from the account (Account ID in Settings →
+Integrations) and the zones listed there; usage-based charges (Workers, R2…) from
+Cloudflare's Billable Usage API, which covers self-serve accounts.
+
+**GitHub.** Edit the fine-grained token from step 3b and add **Organization
+permissions → Administration: Read-only**. Only owners and billing managers can see
+billing, so use a token from one of them. Then **Settings → Costs → GitHub**: the
+organization is the one from the Versions page unless you set another, and the
+**price per seat** (a month) counts the plan's seats, whose price isn't in GitHub's
+API (GitHub shows the seat count to owners only). A personal account's billing needs
+a token whose resource owner is that account, with Plan: Read-only.
+
+**Google AI Studio.** Nothing to add: Google bills AI Studio's Gemini API through
+Cloud Billing, so when AI Studio's project is on the billing account whose export you
+set up above, its usage is in that table (as *Gemini API*) and the page shows it in
+its own section, taken out of Google Cloud's total. If AI Studio is billed to another
+billing account, add what it costs as an item with Google AI Studio as the vendor.
+
+**OpenRouter.** OpenRouter → **Settings → Management keys → Create** (an ordinary API
+key can't read usage), then paste it in **Settings → Costs → OpenRouter** and **Save**.
+The page reads the usage per model for the last 30 days (all OpenRouter keeps) and
+the credits left; it keeps each day it reads, so from the next month on last month is
+complete too.
+
+**fal.** fal → **Settings → API keys → Create key** with the **Admin** scope (fal's
+usage API needs it), then paste it in **Settings → Costs → fal** and **Save**. The page
+reads the usage per endpoint for the last six months and the credit balance.
+
+Both keys can do more than read, so they're saved encrypted on your computer and the
+read-only guard lets them read usage and credits and nothing else. Usage counts as
+it's spent, so don't also add top-ups as items. The page shows how long the credits
+last at this month's pace and turns orange a week before they run out. Under each key,
+**Alert me when the credits are below** turns on an alert at the amount you choose
+(the balance is then checked every 30 minutes).
+
+**Replicate, Sentry, Clerk and everything else** (no billing API): **Settings → Costs →
+Add Replicate**, **Add Sentry**, **Add Clerk** or **Add item**: vendor, what it is,
+amount, currency, how often (monthly, yearly, quarterly, weekly, one-time), and the
+renewal (or payment) date. For Replicate, what you spend in a month (Replicate →
+Account → Billing shows it); change it when the bill does, or add each invoice as a
+one-time item. A Clerk add-on, or users past what the plan includes, can be an item of
+its own with Clerk as the vendor. If amounts mix currencies, type the rate there too.
+
+The page checks every 6 hours; **Refresh** reads again at once (at most once a minute).
+
+---
+
 ## 4. Publish a release (installers for Windows, macOS and Linux)
 
 Releases are built by GitHub Actions from the public repo
@@ -257,11 +343,12 @@ platforms in parallel (about 15 minutes) and publishes a release with:
 | `Flobi-Pulse-Setup-x.y.z.exe`, `Flobi-Pulse-x.y.z-mac.zip`, `Flobi-Pulse-x.y.z.AppImage` | The app itself, when it updates |
 | `SHA256SUMS.txt` | Checksums the app verifies before installing an update |
 
-**Updates, like Discord.** Installed apps check for a new release when they start
-and every 2 hours. When there is one, an **Update available** button appears at
-the top. One click downloads it, checks its checksum, installs it where the app
-already lives and restarts. Settings and keys stay. There's also
-**Settings → Updates → Check now**.
+**Updates, like Discord.** Installed apps check for a new release a few seconds
+after they start, then every hour, when the window comes back to the front (if
+the last check was more than 10 minutes ago) and when the computer wakes up.
+When there is one, an **Update available** button appears at the top. One click
+downloads it, checks its checksum, installs it where the app already lives and
+restarts. Settings and keys stay. There's also **Settings → Updates → Check now**.
 
 The builds aren't signed with paid certificates (that would cost money), so the
 **first** install shows a warning. Updates don't.
@@ -307,9 +394,11 @@ Defender blocks the build with an `EPERM ... rename` error, add
   every 30 seconds in the meantime.
 * **Costs: $0.** Everything the app reads is free: Cloud Logging (including the
   live stream), the Kubernetes API, the Cloud SQL Admin API, Cloud Run status,
-  Sentry and Cloudflare. It never calls Cloud Monitoring, the Google API that's
-  billed per read. The read-only guard blocks it, and a test checks that. The app
-  doesn't create logs, metrics or anything else in your project.
+  Sentry, Cloudflare, GitHub, and for the Costs page BigQuery's table preview of the
+  billing export and OpenRouter's and fal's usage and credits. It never calls Cloud Monitoring, the Google API that's billed per
+  read, and never runs a BigQuery query or job, which BigQuery bills per byte. The
+  read-only guard blocks both, and tests check that. The app doesn't create logs,
+  metrics or anything else in your project.
 * **What that leaves out:** database CPU, memory, disk-usage and connection-count
   graphs, and failure *percentages* in the recap (it shows counts, like "340 failed
   requests", instead). Those numbers only exist in Cloud Monitoring.

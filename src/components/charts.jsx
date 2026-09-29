@@ -183,13 +183,17 @@ const STATUS_SERIES = [
   { key: 'c5', label: '5xx', color: 'var(--red)' },
 ];
 
-export function StatusColumns({ rows, height = 120, className, unit = 'req/s' }) {
+export function StatusColumns({ rows: all, height = 120, className, unit = 'req/s' }) {
   const ref = useRef(null);
   const width = useWidth(ref);
   const [hover, setHover] = useState(null);
-  const n = rows.length || 1;
   const gap = 2;
-  const barW = Math.max(1, Math.min(24, width / n - gap));
+  // A bar needs at least 1 px plus the gap. When the chart is too narrow for all of them, the
+  // oldest seconds go: the newest ones (on the right) must always show.
+  const fit = Math.max(1, Math.floor((width + gap) / (1 + gap)));
+  const rows = all.length > fit ? all.slice(-fit) : all;
+  const n = rows.length || 1;
+  const barW = Math.max(1, Math.min(24, (width + gap) / n - gap));
   const totals = rows.map((r) => r.c2 + r.c3 + r.c4 + r.c5);
   const max = niceMax(Math.max(...totals, 1));
   const padB = 4;
@@ -242,7 +246,12 @@ export function StatusColumns({ rows, height = 120, className, unit = 'req/s' })
   );
 }
 
-export function StatusLegend({ counts }) {
+/**
+ * counts: { '2xx': n, … }. Or pass the chart's own `rows` (as given to StatusColumns) to count
+ * exactly the window the chart shows.
+ */
+export function StatusLegend({ counts, rows }) {
+  if (rows) counts = Object.fromEntries(STATUS_SERIES.map((s) => [s.label, rows.reduce((a, r) => a + (r[s.key] || 0), 0)]));
   return (
     <div className="flex items-center gap-3 text-callout text-label-2">
       {STATUS_SERIES.map((s) => (
@@ -283,7 +292,7 @@ export function LatencyBar({ ms: value, className }) {
       <span className="relative flex-1 h-1 rounded-full bg-fill-3 overflow-hidden">
         <span className="absolute inset-y-0 left-0 rounded-full" style={{ width: `${w * 100}%`, background: tone }} />
       </span>
-      <span className="tabular text-label-2 w-12 text-right">{value >= 1000 ? `${(value / 1000).toFixed(1)}s` : `${Math.round(value)}ms`}</span>
+      <span className="tabular text-label-2 w-12 text-right">{value >= 999.5 ? `${(value / 1000).toFixed(1)}s` : `${Math.round(value)}ms`}</span>
     </span>
   );
 }

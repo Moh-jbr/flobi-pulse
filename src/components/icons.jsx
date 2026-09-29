@@ -1,4 +1,20 @@
 // SF-Symbols-style line icons drawn for Flobi Pulse (20×20 grid, 1.6 stroke).
+
+// Glyphs that go by two names.
+const BOLT = <path d="M11 2.8 5 11h4.4l-1 6.2L15 9h-4.4l.4-6.2Z" />; // crashes, bolt
+const GLOBE = (
+  <>
+    <circle cx="10" cy="10" r="7" />
+    <path d="M3 10h14M10 3c2 2.2 2.8 4.5 2.8 7s-.8 4.8-2.8 7c-2-2.2-2.8-4.5-2.8-7S8 5.2 10 3Z" />
+  </>
+); // frontends, globe
+const HISTORY = (
+  <>
+    <path d="M3.5 10a6.5 6.5 0 1 0 1.9-4.6" />
+    <path d="M3.3 3.6v3.3h3.3M10 6.5V10l2.4 1.6" />
+  </>
+); // timeline, history
+
 const P = {
   overview: (
     <>
@@ -21,11 +37,7 @@ const P = {
       <circle cx="10" cy="13.6" r=".45" fill="currentColor" />
     </>
   ),
-  crashes: (
-    <>
-      <path d="M11 2.8 5 11h4.4l-1 6.2L15 9h-4.4l.4-6.2Z" />
-    </>
-  ),
+  crashes: BOLT,
   logs: (
     <>
       <rect x="3" y="3" width="14" height="14" rx="3" />
@@ -51,18 +63,8 @@ const P = {
       <path d="M4 10c0 1.3 2.7 2.4 6 2.4s6-1.1 6-2.4" />
     </>
   ),
-  frontends: (
-    <>
-      <circle cx="10" cy="10" r="7" />
-      <path d="M3 10h14M10 3c2 2.2 2.8 4.5 2.8 7s-.8 4.8-2.8 7c-2-2.2-2.8-4.5-2.8-7S8 5.2 10 3Z" />
-    </>
-  ),
-  timeline: (
-    <>
-      <path d="M3.5 10a6.5 6.5 0 1 0 1.9-4.6" />
-      <path d="M3.3 3.6v3.3h3.3M10 6.5V10l2.4 1.6" />
-    </>
-  ),
+  frontends: GLOBE,
+  timeline: HISTORY,
   // A cog: eight teeth around a hole.
   settings: (
     <>
@@ -148,13 +150,6 @@ const P = {
       <path d="M3.9 6.5 10 10l6.1-3.5M10 10v7" />
     </>
   ),
-  cpu: (
-    <>
-      <rect x="5" y="5" width="10" height="10" rx="2" />
-      <rect x="8" y="8" width="4" height="4" rx=".8" />
-      <path d="M8 2.8V5M12 2.8V5M8 15v2.2M12 15v2.2M2.8 8H5M2.8 12H5M15 8h2.2M15 12h2.2" />
-    </>
-  ),
   memory: (
     <>
       <rect x="2.8" y="6" width="14.4" height="7.5" rx="1.6" />
@@ -179,15 +174,13 @@ const P = {
     </>
   ),
   cloud: <path d="M6 15.5h8.2a3.3 3.3 0 0 0 .5-6.6 4.8 4.8 0 0 0-9.2-.8A3.8 3.8 0 0 0 6 15.5Z" />,
-  bolt: <path d="M11 2.8 5 11h4.4l-1 6.2L15 9h-4.4l.4-6.2Z" />,
-  flame: <path d="M10 17.2c3 0 5.2-2 5.2-5 0-2.4-1.4-4-2.7-5.5-.4 1.4-1.2 2.3-2.2 2.6.2-2.6-.6-4.9-2.8-6.5.2 2.2-.8 3.8-2 5.2-1.1 1.3-1.9 2.6-1.9 4.2 0 3 2.3 5 5.4 5Z" />,
+  bolt: BOLT,
   sun: (
     <>
       <circle cx="10" cy="10" r="3.3" />
       <path d="M10 2.6v1.5M10 15.9v1.5M17.4 10h-1.5M4.1 10H2.6M15.2 4.8l-1 1M5.8 14.2l-1 1M15.2 15.2l-1-1M5.8 5.8l-1-1" />
     </>
   ),
-  moon: <path d="M15.6 12.4A6.4 6.4 0 0 1 7.6 4.4a6.4 6.4 0 1 0 8 8Z" />,
   info: (
     <>
       <circle cx="10" cy="10" r="7" />
@@ -208,7 +201,6 @@ const P = {
       <path d="M9 5.8 10.3 4.5a3.2 3.2 0 0 1 4.5 4.5L13.5 10.3M11 14.2 9.7 15.5a3.2 3.2 0 0 1-4.5-4.5l1.3-1.3" />
     </>
   ),
-  arrowUpRight: <path d="M6 14 14 6M7.5 6H14v6.5" />,
   sparkles: (
     <>
       <path d="M8.5 3.5 9.6 7a2 2 0 0 0 1.4 1.4l3.5 1.1-3.5 1.1A2 2 0 0 0 9.6 12l-1.1 3.5L7.4 12A2 2 0 0 0 6 10.6L2.5 9.5 6 8.4A2 2 0 0 0 7.4 7l1.1-3.5Z" />
@@ -221,19 +213,7 @@ const P = {
       <path d="M3.5 3.5 16.5 16.5" />
     </>
   ),
-  eye: (
-    <>
-      <path d="M2.6 10S5.3 4.8 10 4.8 17.4 10 17.4 10 14.7 15.2 10 15.2 2.6 10 2.6 10Z" />
-      <circle cx="10" cy="10" r="2.4" />
-    </>
-  ),
-  filter: <path d="M3.5 5h13M6 10h8M8.5 15h3" />,
-  globe: (
-    <>
-      <circle cx="10" cy="10" r="7" />
-      <path d="M3 10h14M10 3c2 2.2 2.8 4.5 2.8 7s-.8 4.8-2.8 7c-2-2.2-2.8-4.5-2.8-7S8 5.2 10 3Z" />
-    </>
-  ),
+  globe: GLOBE,
   rocket: (
     <>
       <path d="M11.5 13.8 8 10.4c1.7-4.3 4.5-6.9 8.6-7.2-.3 4.1-2.8 6.9-7.1 8.6" />
@@ -246,16 +226,12 @@ const P = {
       <path d="m3 10 7 3.6 7-3.6M3 13.4 10 17l7-3.6" />
     </>
   ),
-  terminal: (
+  history: HISTORY,
+  // A receipt: a torn-off bottom edge and three lines.
+  receipt: (
     <>
-      <rect x="2.8" y="3.8" width="14.4" height="12.4" rx="2.4" />
-      <path d="m6 8 2.2 2L6 12M10.5 12.5h3.5" />
-    </>
-  ),
-  history: (
-    <>
-      <path d="M3.5 10a6.5 6.5 0 1 0 1.9-4.6" />
-      <path d="M3.3 3.6v3.3h3.3M10 6.5V10l2.4 1.6" />
+      <path d="M5 3.3a.8.8 0 0 1 .8-.8h8.4a.8.8 0 0 1 .8.8v13.9l-1.67-1.1-1.66 1.1L10 16.1l-1.67 1.1-1.66-1.1L5 17.2Z" />
+      <path d="M7.6 6.4h4.8M7.6 9.2h4.8M7.6 12h2.8" />
     </>
   ),
 };

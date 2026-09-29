@@ -47,7 +47,7 @@ const SENTRY_COLUMNS = [
   { label: 'App', get: (p) => p.project },
   { label: 'Unresolved issues', get: (p) => p.issues },
   { label: 'Events (24 h)', get: (p) => p.events },
-  { label: 'Users affected', get: (p) => p.users },
+  { label: 'Users affected by its worst issue', get: (p) => p.users },
   { label: 'New issues', get: (p) => p.newIssues },
 ];
 
@@ -91,7 +91,9 @@ export default function Frontends() {
       const p = m.get(i.project) || { project: i.project, issues: 0, events: 0, users: 0, newIssues: 0, spark: Array(24).fill(0) };
       p.issues++;
       p.events += i.count;
-      p.users += i.users;
+      // Sentry counts users per issue, and one person often hits several issues: adding them
+      // up would count people twice. The worst issue's count is a true lower bound.
+      p.users = Math.max(p.users, i.users || 0);
       if (i.isNew) p.newIssues++;
       (i.spark || []).forEach((v, idx) => (p.spark[idx] = (p.spark[idx] || 0) + v));
       m.set(i.project, p);
@@ -115,7 +117,7 @@ export default function Frontends() {
               </div>
               <UptimeBars history={u.history} />
               <div className="flex justify-between text-subheadline text-label-2 tabular">
-                <span className={cx(u.state === 'slow' && 'text-orange', u.state === 'down' && 'text-red')}>{u.state === 'down' ? u.error || `HTTP ${u.status}` : u.ms != null ? `${u.ms} ms` : 'checking…'}</span>
+                <span className={cx(u.state === 'slow' && 'text-orange', u.state === 'down' && 'text-red')}>{u.state === 'offline' ? 'Offline: not checked' : u.state === 'down' ? u.error || `HTTP ${u.status}` : u.ms != null ? `${u.ms} ms` : 'checking…'}</span>
                 <span>{u.certDaysLeft != null ? `TLS ${u.certDaysLeft}d` : ''}</span>
               </div>
             </Card>
@@ -252,7 +254,7 @@ export default function Frontends() {
             <Card pad={false} className="overflow-hidden">
               {!projects.length && <Empty title="No frontend errors in the last 24 hours" />}
               {projects.map((p) => (
-                <button key={p.project} type="button" onClick={() => navigate({ to: 'errors', filter: { source: 'frontend', service: p.project } })} className="w-full text-left px-4 py-3 hairline-b hover:bg-fill-4 grid grid-cols-[minmax(0,1fr)_100px_90px_90px] gap-4 items-center">
+                <button key={p.project} type="button" onClick={() => navigate({ to: 'errors', filter: { source: 'frontend', service: p.project } })} className="w-full text-left px-4 py-3 hairline-b hover:bg-fill-4 grid grid-cols-[minmax(0,1fr)_100px_90px_104px] gap-4 items-center">
                   <div className="min-w-0">
                     <div className="text-headline font-semibold truncate">{p.project}</div>
                     <div className="text-subheadline text-label-2">
@@ -265,9 +267,9 @@ export default function Frontends() {
                     <div className="text-headline font-semibold tabular">{compact(p.events)}</div>
                     <div className="text-subheadline text-label-3">events</div>
                   </div>
-                  <div className="text-right">
+                  <div className="text-right" title="Users hit by this app's worst issue. Sentry counts users per issue, so they can't be added up across issues.">
                     <div className="text-headline font-semibold tabular">{compact(p.users)}</div>
-                    <div className="text-subheadline text-label-3">users</div>
+                    <div className="text-subheadline text-label-3 whitespace-nowrap">users, worst issue</div>
                   </div>
                 </button>
               ))}

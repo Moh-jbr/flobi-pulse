@@ -1,11 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useStore, setState, navigate, invoke, inspect, logs as globalLogs } from '../lib/store.js';
 import Icon from './icons.jsx';
-import { cx, HealthPill, Pill, Meter, KeyValue, Button, Spinner, StatusDot, STATE_TONE, StatusCode, IconButton, useNow, useWindowWidth, CopyButton } from './ui.jsx';
+import { cx, HealthPill, Pill, Meter, KeyValue, Button, Spinner, StatusDot, STATE_TONE, IconButton, useNow, useWindowWidth, CopyButton } from './ui.jsx';
 import { LineChart, Sparkline } from './charts.jsx';
 import { EXPLAIN } from '../views/Events.jsx';
 import { LEVEL } from '../views/Logs.jsx';
-import { ago, clock, clockMs, dayTime, duration, bytes, cores, pct, ms, short, uaShort, compact } from '../lib/format.js';
+import { RequestStatus, NO_RESPONSE, cleanError } from '../views/Traffic.jsx';
+import { ago, clock, clockHMS, clockMs, dayTime, duration, bytes, cores, pct, ms, short, uaShort, compact, coverage } from '../lib/format.js';
+import { crashReason } from '../views/Crashes.jsx';
+import { isWindows } from '../lib/platform.js';
+import ErrorBoundary from './ErrorBoundary.jsx';
 
 const DETAILS = {
   response_sent_by_backend: 'The service answered with this status itself.',
@@ -41,7 +45,7 @@ function LogBlock({ lines, loading, empty = 'No log lines.' }) {
     <div className="rounded-[12px] bg-[var(--code-bg)] max-h-[340px] overflow-auto py-1.5 font-mono text-[11px] leading-[15px] selectable">
       {lines.map((l, i) => (
         <div key={l.id || i} className={cx('px-3 py-[1px] whitespace-pre-wrap break-words', l.level === 'ERROR' && 'text-red', l.level === 'WARN' && 'text-orange')}>
-          <span className="text-label-3 mr-2">{clockMs(l.ts).slice(0, 8)}</span>
+          <span className="text-label-3 mr-2">{clockHMS(l.ts)}</span>
           {l.text}
         </div>
       ))}
@@ -53,11 +57,22 @@ function UsageCharts({ service }) {
   const [data, setData] = useState(null);
   useEffect(() => {
     let alive = true;
-    invoke('usage:get', { service, range: 3600_000 })
-      .then((d) => alive && setData(d))
-      .catch(() => alive && setData({ error: true }));
+    let busy = false;
+    const load = () => {
+      if (busy) return;
+      busy = true;
+      invoke('usage:get', { service, range: 3600_000 })
+        .then((d) => alive && setData(d))
+        // A failed refresh keeps the charts already drawn.
+        .catch(() => alive && setData((cur) => (cur && !cur.error ? cur : { error: true })))
+        .finally(() => (busy = false));
+    };
+    load();
+    // A new point comes every 15 seconds: redraw with it while the panel is open.
+    const t = setInterval(load, 15_000);
     return () => {
       alive = false;
+      clearInterval(t);
     };
   }, [service]);
   if (!data) return <div className="skeleton h-[120px]" />;
@@ -84,7 +99,7 @@ function ServiceInspector({ id }) {
   const events = useStore((st) => st.sections.events) || [];
   const crashes = useStore((st) => st.sections.crashes) || [];
   const now = useNow(10_000);
-  if (!s) return <Gone what="service" />;
+  if (!s) return <Gone what="service" section="services" />;
   const myPods = pods.filter((p) => p.service === s.name);
   const myEvents = events.filter((e) => e.service === s.name).slice(0, 8);
   const myCrashes = crashes.filter((c) => c.service === s.name).slice(0, 5);
@@ -103,7 +118,7 @@ function ServiceInspector({ id }) {
         <Button size="sm" icon="errors" onClick={() => navigate({ to: 'errors', filter: { service: s.name } })}>
           Errors
         </Button>
-        <IconButton icon="mute" label="Mute alerts for 1 hour" onClick={() => invoke('alerts:mute', { service: s.name, minutes: 60 })} />
+        <IconButton icon="mute" label={`Mute ${s.short} for 1 hour`} onClick={() => invoke('alerts:mute', { target: s.name, minutes: 60 })} />
       </div>
       {s.reasons?.length > 0 && s.health !== 'healthy' && (
         <div className={cx('mx-5 mb-4 rounded-[14px] px-3.5 py-2.5 text-callout', s.health === 'down' ? 'bg-red-tint' : s.health === 'deploying' ? 'bg-accent-tint' : 'bg-orange-tint')}>
@@ -130,34 +145,40 @@ function ServiceInspector({ id }) {
       </Section>
       <Section title={`Pods (${myPods.length})`}>
         <div className="flex flex-col gap-1">
-          {myPods.map((p) => (
-            <button key={p.name} type="button" onClick={() => inspect('pod', p.name)} className="text-left rounded-[12px] px-2.5 py-2 hover:bg-fill-4 -mx-2.5">
-              <div className="flex items-center gap-2">
-                <StatusDot tone={STATE_TONE[p.state]} size={7} />
-                <span className="font-mono text-callout truncate flex-1">{p.name}</span>
-                <span className="text-subheadline text-label-2">{p.status}</span>
-              </div>
-              <div className="grid grid-cols-2 gap-3 mt-1.5 pl-[15px]">
-                <div>
-                  <div className="flex justify-between text-footnote text-label-3 mb-0.5">
-                    <span>CPU</span>
-                    <span>{cores(p.cpu)}</span>
-                  </div>
-                  <Meter value={p.cpu != null && (p.cpuLimit || p.cpuRequest) ? p.cpu / (p.cpuLimit || p.cpuRequest) : null} height={3} />
+          {myPods.map((p) => {
+            // A Pending pod hasn't started a container yet, so there's no start time.
+            const started = p.containers?.[0]?.startedAt || p.startedAt;
+            return (
+              <button key={p.name} type="button" onClick={() => inspect('pod', p.name)} className="text-left rounded-[12px] px-2.5 py-2 hover:bg-fill-4 -mx-2.5">
+                <div className="flex items-center gap-2">
+                  <StatusDot tone={STATE_TONE[p.state]} size={7} />
+                  <span className="font-mono text-callout truncate flex-1">{p.name}</span>
+                  <span className="text-subheadline text-label-2">{p.status}</span>
                 </div>
-                <div>
-                  <div className="flex justify-between text-footnote text-label-3 mb-0.5">
-                    <span>Memory</span>
-                    <span>{bytes(p.mem)}</span>
+                <div className="grid grid-cols-2 gap-3 mt-1.5 pl-[15px]">
+                  <div>
+                    <div className="flex justify-between text-footnote text-label-3 mb-0.5">
+                      <span>CPU</span>
+                      <span>{cores(p.cpu)}</span>
+                    </div>
+                    <Meter value={p.cpu != null && (p.cpuLimit || p.cpuRequest) ? p.cpu / (p.cpuLimit || p.cpuRequest) : null} height={3} />
                   </div>
-                  <Meter value={p.mem != null && p.memLimit ? p.mem / p.memLimit : null} height={3} />
+                  <div>
+                    <div className="flex justify-between text-footnote text-label-3 mb-0.5">
+                      <span>Memory</span>
+                      <span>{bytes(p.mem)}</span>
+                    </div>
+                    {/* The fullest container against its own limit: a sidecar without one doesn't count. */}
+                    <Meter value={p.memPct ?? (p.mem != null && p.memLimit ? p.mem / p.memLimit : null)} height={3} />
+                  </div>
                 </div>
-              </div>
-              <div className="text-footnote text-label-3 mt-1 pl-[15px]">
-                {p.restarts} restarts · up {duration(now - (p.containers[0]?.startedAt || p.startedAt))} · {p.node?.slice(-12)}
-              </div>
-            </button>
-          ))}
+                <div className="text-footnote text-label-3 mt-1 pl-[15px]">
+                  {p.restarts} restarts · {started ? `up ${duration(now - started)}` : 'not started yet'}
+                  {p.node ? ` · ${p.node.slice(-12)}` : ''}
+                </div>
+              </button>
+            );
+          })}
         </div>
       </Section>
       <Section title="Usage · last hour">
@@ -199,7 +220,7 @@ function PodInspector({ id }) {
   const [prev, setPrev] = useState(null);
   const now = useNow(10_000);
   useEffect(() => setPrev(null), [id]);
-  if (!p) return <Gone what="pod" />;
+  if (!p) return <Gone what="pod" section="pods" />;
   const myEvents = events.filter((e) => e.name === p.name).slice(0, 10);
   const c0 = p.containers.find((c) => c.name === p.mainContainer) || p.containers[0];
   return (
@@ -252,7 +273,7 @@ function PodInspector({ id }) {
                 try {
                   setPrev({ lines: await invoke('logs:previous', { pod: p.name, container: p.lastTermination.container || c0?.name, service: p.service }) });
                 } catch (e) {
-                  setPrev({ lines: [{ id: 'e', ts: Date.now(), text: e.message, level: 'ERROR' }] });
+                  setPrev({ lines: [{ id: 'e', ts: Date.now(), text: cleanError(e), level: 'ERROR' }] });
                 }
               }}
             >
@@ -281,7 +302,7 @@ function PodInspector({ id }) {
 
 // What an HTTP status means, in one plain sentence (like the browser's Network tab, but explained).
 const HTTP_STATUS = {
-  0: ['No response', 'The request never got an answer.'],
+  0: ['No response', 'The user closed the page, lost their connection or gave up waiting before the service answered, so the load balancer had nothing to send back. There is no status code, so it shows as 0.'],
   400: ['Bad Request', 'The request was malformed or missing something the service needs.'],
   401: ['Unauthorized', "The caller isn't signed in, or their session token expired."],
   403: ['Forbidden', "The caller is signed in but isn't allowed to do this."],
@@ -324,7 +345,7 @@ function useRequestLogs(r, workload, enabled) {
         const lines = [...(res?.lines || []), ...fromMemory].filter((l) => !seen.has(l.id) && seen.add(l.id)).sort((a, b) => a.ts - b.ts);
         setLogState({ loading: false, lines, match: res?.match === 'trace' ? 'trace' : 'time', error: null });
       })
-      .catch((e) => alive && setLogState((st) => ({ ...st, loading: false, error: String(e.message || e).replace(/^Error invoking remote method '[^']+': (Error: )?/, '') })));
+      .catch((e) => alive && setLogState((st) => ({ ...st, loading: false, error: cleanError(e) })));
     return () => {
       alive = false;
     };
@@ -340,7 +361,7 @@ function RequestLogLines({ lines, r }) {
     <div key="__req" className="flex items-center gap-2 px-3 py-1 text-accent">
       <span className="h-px flex-1 bg-accent/40" />
       <span className="font-sans text-footnote font-semibold">
-        {r.method} {path} → {r.status} at {clockMs(r.ts).slice(0, 12)}
+        {r.method} {path} → {r.status} at {clockMs(r.ts)}
       </span>
       <span className="h-px flex-1 bg-accent/40" />
     </div>
@@ -350,7 +371,7 @@ function RequestLogLines({ lines, r }) {
     if (!marked && l.ts > r.ts) (marked = true), rows.push(marker);
     rows.push(
       <div key={l.id} className={cx('px-3 py-[1px] whitespace-pre-wrap break-words', l.level === 'ERROR' && 'text-red', l.level === 'WARN' && 'text-orange', path.length > 1 && l.text.includes(path) && 'font-semibold')}>
-        <span className="text-label-3 mr-2">{clockMs(l.ts).slice(0, 12)}</span>
+        <span className="text-label-3 mr-2">{clockMs(l.ts)}</span>
         {l.text}
       </div>,
     );
@@ -378,12 +399,15 @@ function RequestInspector({ data: r }) {
     }
   })();
   const svc = r.service ? short(workload) : null;
-  const serverSide = !r.status || r.status >= 500;
+  // Status 0: no answer at all, because the client closed the connection first (not a server failure).
+  const noResponse = !r.status;
+  const serverSide = r.status >= 500;
+  const statusLine = noResponse ? `0 (${NO_RESPONSE})` : `${r.status} ${statusText(r.status)}`;
   const lbSays = r.statusDetails && DETAILS[r.statusDetails];
   const cloudflare = /^1(04|08|62|72|73)\./.test(r.ip);
   const curl = [`curl -X ${r.method} ${shellQuote(url)}`, r.ua && `-H ${shellQuote(`User-Agent: ${r.ua}`)}`, r.referer && `-H ${shellQuote(`Referer: ${r.referer}`)}`].filter(Boolean).join(' \\\n  ');
   const summary = [
-    `${r.method} ${url} → ${r.status || 'no response'} ${statusText(r.status)}`,
+    `${r.method} ${url} → ${statusLine}`,
     `When: ${dayTime(r.ts)} ${clockMs(r.ts)} · took ${ms(r.latencyMs)}`,
     `Served by: ${svc || 'unknown'}${r.statusDetails ? ` · load balancer: ${r.statusDetails}` : ''}`,
     `Client: ${uaShort(r.ua)} · ${r.ip}${cloudflare ? ' (via Cloudflare)' : ''}`,
@@ -395,7 +419,7 @@ function RequestInspector({ data: r }) {
 
   return (
     <>
-      <Header title={`${r.method} ${path}`} mono wrap subtitle={r.host} right={<StatusCode status={r.status} />} />
+      <Header title={`${r.method} ${path}`} mono wrap subtitle={r.host} right={<RequestStatus status={r.status} />} />
       <div className="px-5 pb-4 flex gap-2 flex-wrap">
         {r.service && (
           <Button size="sm" icon="logs" onClick={() => navigate({ to: 'logs', service: workload, from: r.ts - 60_000, until: r.ts + 60_000 })}>
@@ -410,12 +434,16 @@ function RequestInspector({ data: r }) {
         <Section title="What went wrong">
           <div className={cx('rounded-[12px] p-3 text-callout', serverSide ? 'bg-red-tint' : 'bg-orange-tint')}>
             <div className="font-semibold">
-              {r.status || 'No response'} {statusText(r.status)}: {serverSide ? `the problem is on our side${svc ? ` (${svc})` : ''}, not the user's.` : 'the request was refused, usually because of what the caller sent or who they are.'}
+              {noResponse ? `0 · ${NO_RESPONSE} before an answer came back.` : `${r.status} ${statusText(r.status)}: ${serverSide ? `the problem is on our side${svc ? ` (${svc})` : ''}, not the user's.` : 'the request was refused, usually because of what the caller sent or who they are.'}`}
             </div>
-            <div className="mt-1 text-label-2">{HTTP_STATUS[r.status]?.[1] || (serverSide ? 'The service failed to handle it.' : 'The service rejected it.')}</div>
+            <div className="mt-1 text-label-2">{HTTP_STATUS[r.status || 0]?.[1] || (serverSide ? 'The service failed to handle it.' : 'The service rejected it.')}</div>
             {lbSays && <div className="mt-1 text-label-2">Load balancer: {lbSays}</div>}
             <div className="mt-2 text-label">
-              {serverSide ? `The server logs below usually show the exact error. If they're empty, ${svc || 'the service'} doesn't log failed requests.` : "Check the server logs below for the service's reason (for example a validation message)."}
+              {serverSide
+                ? `The server logs below usually show the exact error. If they're empty, ${svc || 'the service'} doesn't log failed requests.`
+                : noResponse
+                  ? `Usually nothing is broken. If it took long${r.latencyMs != null ? ` (${ms(r.latencyMs)})` : ''}, the server logs below show what ${svc || 'the service'} was doing meanwhile.`
+                  : "Check the server logs below for the service's reason (for example a validation message)."}
             </div>
           </div>
         </Section>
@@ -465,7 +493,7 @@ function RequestInspector({ data: r }) {
           items={[
             ['Request URL', url],
             ['Method', r.method],
-            ['Status code', `${r.status || '—'} ${statusText(r.status)}`],
+            ['Status code', statusLine],
             ['Time', `${dayTime(r.ts)} · ${clockMs(r.ts)}`],
             ['Took', ms(r.latencyMs)],
             ['Served by', svc || 'unknown'],
@@ -489,7 +517,7 @@ function RequestInspector({ data: r }) {
       )}
 
       <Section title="Response">
-        <KeyValue items={[['Status', `${r.status || '—'} ${statusText(r.status)}`], ['Size', bytes(r.respSize)]]} />
+        <KeyValue items={[['Status', statusLine], ['Size', bytes(r.respSize)]]} />
         <p className="text-subheadline text-label-3 mt-2.5">
           Google's load balancer doesn't record request or response bodies or headers, so they can't be shown. The server logs above are the closest thing{failed ? ": that's where the service writes why it failed." : '.'}
         </p>
@@ -502,7 +530,8 @@ function ErrorInspector({ id }) {
   const errors = useStore((st) => st.sections.errors);
   const now = useNow(10_000);
   const g = useMemo(() => [...(errors?.backend || []), ...(errors?.frontend || [])].find((x) => x.id === id), [errors, id]);
-  if (!g) return <Gone what="error" />;
+  const span = coverage(errors?.since, now);
+  if (!g) return <Gone what="error" section="errors" />;
   if (g.source === 'frontend') {
     return (
       <>
@@ -538,7 +567,7 @@ function ErrorInspector({ id }) {
         <Sparkline data={g.spark} width={380} height={56} color="var(--red)" />
       </Section>
       <Section title="Details">
-        <KeyValue items={[['Occurrences', `${compact(g.count)} (${compact(g.count1h)} in the last hour)`], ['First seen', `${dayTime(g.firstSeen)} (${ago(g.firstSeen, now)})`], ['Last seen', ago(g.lastSeen, now)], ['Pods', g.pods.join(', ')]]} />
+        <KeyValue items={[['Occurrences', `${compact(g.count)}${span.label ? ` ${span.label}` : ''} (${compact(g.count1h)} in the last hour)`], ['First seen', `${dayTime(g.firstSeen)} (${ago(g.firstSeen, now)})`], ['Last seen', `${dayTime(g.lastSeen)} (${ago(g.lastSeen, now)})`], ['Pods', g.pods.join(', ')]]} />
       </Section>
       {g.stack?.length > 0 && (
         <Section title="Stack trace">
@@ -554,26 +583,50 @@ function ErrorInspector({ id }) {
 
 function CrashInspector({ id }) {
   const c = useStore((st) => st.sections.crashes?.find((x) => x.id === id));
-  const podExists = useStore((st) => !!st.sections.pods?.find((x) => x.name === c?.pod));
+  const podExists = useStore((st) => !!c && !!st.sections.pods?.some((x) => x.name === c.pod));
   const [logs, setLogs] = useState({ loading: true });
   const now = useNow(10_000);
+  const found = !!c;
+  // Opened from a notification, the crash can show up a moment after the panel: load once it's here.
   useEffect(() => {
     if (!c) return;
     let alive = true;
     setLogs({ loading: true });
-    const load = podExists ? invoke('logs:previous', { pod: c.pod, container: c.container, service: c.service }) : invoke('logs:query', { pod: c.pod, from: c.at - 5 * 60_000, until: c.at + 5_000, limit: 300 });
-    load.then((lines) => alive && setLogs({ lines })).catch((e) => alive && setLogs({ lines: [{ id: 'e', ts: Date.now(), text: e.message, level: 'ERROR' }] }));
+    // This crash's own run: main reads Kubernetes' "previous" logs when it's the container's
+    // latest crash, and Cloud Logging around `at` for an older one. A crash found in the logs
+    // (Kubernetes events, before the app started) is always an older one.
+    const load =
+      podExists && !c.fromLogs
+        ? invoke('logs:previous', { pod: c.pod, container: c.container, service: c.service, restarts: c.restarts, at: c.at })
+        : invoke('logs:query', { pod: c.pod, from: c.at - (c.fromLogs ? 10 : 5) * 60_000, until: c.at + 5_000, limit: 300 });
+    load.then((lines) => alive && setLogs({ lines })).catch((e) => alive && setLogs({ lines: [{ id: 'e', ts: Date.now(), text: cleanError(e), level: 'ERROR' }] }));
     return () => {
       alive = false;
     };
-  }, [id]);
-  if (!c) return <Gone what="crash" />;
+  }, [id, found, podExists]);
+  if (!c) return <Gone what="crash" section="crashes" />;
   const oom = c.reason === 'OOMKilled';
+  const why = crashReason(c);
   return (
     <>
-      <Header title={oom ? 'Out of memory' : c.reason} subtitle={`${short(c.service)} · ${dayTime(c.at)}`} right={<Pill tone={oom ? 'red' : 'orange'} strong>exit {c.exitCode ?? '—'}</Pill>} />
+      <Header title={oom ? 'Out of memory' : why.label} subtitle={`${short(c.service)} · ${dayTime(c.at)}`} right={c.fromLogs ? <Pill tone="gray">From the logs</Pill> : <Pill tone={oom ? 'red' : 'orange'} strong>exit {c.exitCode ?? '—'}</Pill>} />
       <div className="mx-5 mb-4 rounded-[14px] bg-fill-4 px-3.5 py-2.5 text-callout">
-        {oom ? 'The container used more memory than its limit and the kernel killed it. Kubernetes restarted it.' : c.exitCode === 137 ? 'The container was killed (SIGKILL) — usually a failed liveness probe or eviction.' : c.exitCode === 143 ? 'The container was asked to stop (SIGTERM) and exited.' : c.exitCode === 1 ? 'The app exited with an error (usually an unhandled exception at startup or runtime).' : 'The container stopped and Kubernetes restarted it.'}
+        {oom
+          ? 'The container used more memory than its limit and the kernel killed it. Kubernetes restarted it.'
+          : c.reason === 'CrashLoopBackOff'
+            ? 'The container kept crashing, so Kubernetes waited longer and longer before restarting it (a crash loop).'
+            : c.reason === 'LivenessProbe'
+              ? 'The container stopped answering its liveness probe, so Kubernetes killed it and restarted it.'
+              : c.reason === 'StartupProbe'
+                ? "The container didn't pass its startup probe in time, so Kubernetes killed it and restarted it."
+                : c.exitCode === 137
+                  ? 'The container was killed (SIGKILL) — usually a failed liveness probe or eviction.'
+                  : c.exitCode === 143
+                    ? 'The container was asked to stop (SIGTERM) and exited.'
+                    : c.exitCode === 1
+                      ? 'The app exited with an error (usually an unhandled exception at startup or runtime).'
+                      : 'The container stopped and Kubernetes restarted it.'}
+        {c.fromLogs && <div className="text-label-2 mt-1">Found in Kubernetes events in Google's logs, from before Flobi Pulse started: they name the reason but not the exit code.</div>}
       </div>
       <div className="px-5 pb-4 flex gap-2">
         <Button size="sm" icon="stack" onClick={() => inspect('service', c.service)}>
@@ -586,9 +639,21 @@ function CrashInspector({ id }) {
         )}
       </div>
       <Section title="Details">
-        <KeyValue items={[['Pod', c.pod], ['Container', c.container], ['When', `${dayTime(c.at)} (${ago(c.at, now)})`], ['Reason', c.reason], ['Exit code', c.exitCode], ['Restarts so far', c.restarts], c.message && ['Message', c.message]]} />
+        <KeyValue
+          items={[
+            ['Pod', c.pod],
+            ['Container', c.container],
+            ['When', `${dayTime(c.at)} (${ago(c.at, now)})`],
+            c.fromLogs && c.until > c.at + 60_000 && ['Until', `${dayTime(c.until)} (${duration(c.until - c.at)} later)`],
+            ['Reason', why.label],
+            !c.fromLogs && ['Exit code', c.exitCode],
+            !c.fromLogs && ['Restarts so far', c.restarts],
+            c.fromLogs && c.times > 1 && ['Reported', `${c.times} times by Kubernetes`],
+            c.message && ['Message', c.message],
+          ]}
+        />
       </Section>
-      <Section title={podExists ? 'Logs from right before the crash' : 'Logs around the crash (Cloud Logging)'}>
+      <Section title={podExists && !c.fromLogs ? 'Logs from right before the crash' : 'Logs before the crash (Cloud Logging)'}>
         <LogBlock lines={logs.lines} loading={logs.loading} empty="No logs were kept from before this crash." />
       </Section>
     </>
@@ -613,9 +678,7 @@ function LogInspector({ data: l }) {
         <Button size="sm" icon="history" onClick={() => navigate({ to: 'logs', service: l.service, from: l.ts - 60_000, until: l.ts + 60_000 })}>
           Show surrounding lines
         </Button>
-        <Button size="sm" icon="copy" onClick={() => invoke('clipboard:write', { text: l.text })}>
-          Copy
-        </Button>
+        <CopyButton text={l.text} label="Copy" />
       </div>
     </>
   );
@@ -653,7 +716,15 @@ function Header({ title, subtitle, right, mono, wrap }) {
   );
 }
 
-function Gone({ what }) {
+/** Not in the data (anymore): gone, or, right after launch, not loaded yet. */
+function Gone({ what, section }) {
+  const loaded = useStore((st) => !section || st.sections[section] !== undefined);
+  if (!loaded)
+    return (
+      <div className="p-8 grid place-items-center">
+        <Spinner />
+      </div>
+    );
   return <div className="p-8 text-center text-callout text-label-2">This {what} is no longer around.</div>;
 }
 
@@ -663,21 +734,25 @@ export default function Inspector() {
   const ins = useStore((s) => s.inspector);
   const width = useWindowWidth();
   // Windows draws its minimize/maximize/close buttons over the top-right 52 px.
-  const isWin = useStore((s) => s.info?.platform === 'win32');
+  const isWin = isWindows();
   if (!ins) return null;
   const Body = BODIES[ins.type];
   if (!Body) return null;
   // Below ~1400 px there isn't room for content + panel side by side: the panel
   // floats over the content instead of squeezing tables into a sliver.
   const floating = width < 1400;
+  // Floating, only the panel takes clicks: the empty strip above it (the window buttons'
+  // room on Windows) must not swallow clicks on the toolbar underneath.
   return (
-    <aside className={cx('p-2 pl-0', isWin && 'pt-[54px]', floating ? 'absolute right-0 top-0 bottom-0 z-40' : 'shrink-0 relative')} style={{ width: Math.min(440, width - 120) }}>
+    <aside className={cx('p-2 pl-0', isWin && 'pt-[54px]', floating ? 'absolute right-0 top-0 bottom-0 z-inspector pointer-events-none' : 'shrink-0 relative')} style={{ width: Math.min(440, width - 120) }}>
       {/* Docked, it's the sidebar's twin (same glass, same radius); floating over content it needs the denser glass. */}
-      <div key={`${ins.type}:${ins.id}`} className={cx('h-full rounded-[20px] overflow-y-auto animate-slide-right relative', floating ? 'glass-strong shadow-[var(--shadow-pop)]' : 'glass-panel')}>
+      <div key={`${ins.type}:${ins.id}`} className={cx('h-full rounded-[20px] overflow-y-auto animate-slide-right relative', floating ? 'glass-strong shadow-[var(--shadow-pop)] pointer-events-auto' : 'glass-panel')}>
         <button type="button" onClick={() => setState({ inspector: null })} className="no-drag absolute top-4 right-4 z-10 w-7 h-7 rounded-full bg-fill-3 hover:bg-fill-2 grid place-items-center text-label-2" aria-label="Close">
           <Icon name="x" size={12} strokeWidth={2.4} />
         </button>
-        <Body id={ins.id} data={ins.data} />
+        <ErrorBoundary what="panel">
+          <Body id={ins.id} data={ins.data} />
+        </ErrorBoundary>
       </div>
     </aside>
   );

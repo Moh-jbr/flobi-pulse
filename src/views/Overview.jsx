@@ -1,11 +1,13 @@
 import { useMemo, useState } from 'react';
 import { useStore, inspect, navigate } from '../lib/store.js';
 import { ViewScroll } from '../components/Toolbar.jsx';
-import { Card, SectionTitle, Segmented, HealthPill, StatusDot, Meter, cx, STATE_TONE, SEV_TONE, useNow, Empty, Pill } from '../components/ui.jsx';
+import { Card, SectionTitle, Segmented, HealthPill, StatusDot, Meter, cx, STATE_TONE, SEV_TONE, useNow, Empty } from '../components/ui.jsx';
 import { Sparkline, UptimeBars } from '../components/charts.jsx';
 import Icon from '../components/icons.jsx';
 import { compact, pct, ms, ago, short, num } from '../lib/format.js';
 import ExportButton from '../components/ExportButton.jsx';
+import { RecoveringTag, SilencedTag } from './Recent.jsx';
+import { crashReason } from './Crashes.jsx';
 
 const SERVICE_COLUMNS = [
   { label: 'Service', get: (s) => s.short },
@@ -148,6 +150,9 @@ export default function Overview() {
           : 'checking…';
   const backendUptime = uptime.filter((u) => u.group !== 'frontend');
   const k8sError = sources?.kubernetes?.status === 'error' ? sources.kubernetes.message : null;
+  // Problems first; alerts whose problem went away (recovering) after them.
+  const activeAlerts = [...(alerts?.active || [])].sort((a, b) => Number(!!a.clearing) - Number(!!b.clearing));
+  const rollingOut = health?.counts?.deploying || 0;
 
   return (
     <ViewScroll>
@@ -176,7 +181,12 @@ export default function Overview() {
         <section className="min-w-0 animate-rise" style={{ animationDelay: '60ms' }}>
           <SectionTitle
             title="Services"
-            subtitle={`${services.length} workloads in the ${session?.namespace || 'flobi'} namespace`}
+            subtitle={
+              <>
+                {services.length} workloads in the {session?.namespace || 'flobi'} namespace
+                {rollingOut > 0 && <span className="text-accent font-medium"> · {rollingOut} rolling out</span>}
+              </>
+            }
             right={
               <>
                 <Segmented
@@ -218,14 +228,18 @@ export default function Overview() {
 
         <aside className="min-w-0 flex flex-col gap-6 animate-rise" style={{ animationDelay: '120ms' }}>
           <section>
-            <SectionTitle title="Active alerts" right={<button type="button" className="text-callout text-accent" onClick={() => navigate('crashes')}>See all</button>} />
+            <SectionTitle title="Active alerts" right={<button type="button" className="text-callout text-accent" onClick={() => navigate({ to: 'recent', filter: 'open' })}>See all</button>} />
             <Card pad={false} className="p-1.5">
-              {!(alerts?.active || []).length && <div className="px-3 py-6 text-center text-callout text-label-2">No active alerts</div>}
-              {(alerts?.active || []).slice(0, 6).map((a) => (
-                <button key={a.id} type="button" onClick={() => navigate(a.view || 'crashes')} className="w-full text-left flex gap-2.5 p-2 rounded-[12px] hover:bg-fill-4">
-                  <StatusDot tone={SEV_TONE[a.severity]} size={8} className="mt-1.5" pulse={a.severity === 'critical'} />
-                  <div className="min-w-0">
-                    <div className="text-callout font-semibold truncate">{a.title}</div>
+              {!activeAlerts.length && <div className="px-3 py-6 text-center text-callout text-label-2">No active alerts</div>}
+              {activeAlerts.slice(0, 6).map((a) => (
+                <button key={a.id} type="button" onClick={() => navigate(a.view || 'crashes')} className={cx('w-full text-left flex gap-2.5 p-2 rounded-[12px] hover:bg-fill-4', a.clearing && 'opacity-60')}>
+                  <StatusDot tone={SEV_TONE[a.severity]} size={8} className="mt-1.5" pulse={a.severity === 'critical' && !a.acked && !a.clearing} />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="text-callout font-semibold truncate">{a.title}</span>
+                      {a.clearing && <RecoveringTag />}
+                      {(a.acked || a.silenced) && <SilencedTag />}
+                    </div>
                     <div className="text-subheadline text-label-2 truncate">
                       {ago(a.openedAt, now)}
                       {a.detail ? ` · ${a.detail}` : ''}
@@ -244,7 +258,7 @@ export default function Overview() {
                   <div className="flex items-center gap-2 text-callout">
                     <StatusDot tone={u.state === 'up' ? 'green' : u.state === 'slow' ? 'orange' : u.state === 'down' ? 'red' : 'gray'} size={7} />
                     <span className="font-medium truncate">{u.name}</span>
-                    <span className="ml-auto tabular text-label-2">{u.state === 'down' ? u.error || `HTTP ${u.status}` : u.ms != null ? `${u.ms} ms` : '…'}</span>
+                    <span className="ml-auto tabular text-label-2">{u.state === 'offline' ? 'Offline' : u.state === 'down' ? u.error || `HTTP ${u.status}` : u.ms != null ? `${u.ms} ms` : '…'}</span>
                   </div>
                   <UptimeBars history={u.history} className="mt-2" />
                 </div>
@@ -256,7 +270,7 @@ export default function Overview() {
           <section>
             <SectionTitle title="Recent crashes" right={<button type="button" className="text-callout text-accent" onClick={() => navigate('crashes')}>See all</button>} />
             <Card pad={false} className="p-1.5">
-              {!crashes.length && <div className="px-3 py-6 text-center text-callout text-label-2">No crashes in the last 24 hours</div>}
+              {!crashes.length && <div className="px-3 py-6 text-center text-callout text-label-2">No crashes in the last 7 days</div>}
               {crashes.slice(0, 4).map((c) => (
                 <button key={c.id} type="button" onClick={() => inspect('crash', c.id)} className="w-full text-left flex gap-2.5 p-2 rounded-[12px] hover:bg-fill-4">
                   <div className={cx('w-6 h-6 rounded-full grid place-items-center shrink-0', c.reason === 'OOMKilled' ? 'bg-red-tint' : 'bg-orange-tint')}>
@@ -264,10 +278,10 @@ export default function Overview() {
                   </div>
                   <div className="min-w-0">
                     <div className="text-callout font-semibold truncate">
-                      {short(c.service)} · {c.reason === 'OOMKilled' ? 'Out of memory' : c.reason}
+                      {short(c.service)} · {crashReason(c).label}
                     </div>
                     <div className="text-subheadline text-label-2 truncate">
-                      {ago(c.at, now)} · exit {c.exitCode ?? '—'} · {c.restarts} restarts
+                      {ago(c.at, now)} · {c.fromLogs ? 'from the logs' : `exit ${c.exitCode ?? '—'} · ${c.restarts} restarts`}
                     </div>
                   </div>
                 </button>
@@ -276,13 +290,6 @@ export default function Overview() {
           </section>
         </aside>
       </div>
-      {health?.counts?.deploying > 0 && (
-        <div className="mt-6">
-          <Pill tone="accent" icon="refresh">
-            {health.counts.deploying} rolling out
-          </Pill>
-        </div>
-      )}
     </ViewScroll>
   );
 }

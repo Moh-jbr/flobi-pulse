@@ -17,6 +17,7 @@ let state = {
   palette: false,
   recapOpen: false,
   versions: null, // the Versions page (the team's GitHub releases)
+  costs: null, // the Costs page (billing from BigQuery's export, Cloudflare, GitHub, Settings)
   update: null, // app update: { status: idle|checking|available|downloading|installing|error|unsupported, version, progress, error }
   bridgeError: null,
 };
@@ -84,7 +85,8 @@ export async function connect(getBridge) {
     setState({ bridgeError: e.message });
     return;
   }
-  document.documentElement.dataset.platform = bridge.platform;
+  // platform() (lib/platform.js) reads this first, and guesses from the user agent without it.
+  if (bridge.platform) document.documentElement.dataset.platform = bridge.platform;
   bridge.on((m) => {
     switch (m.t) {
       case 'state':
@@ -107,7 +109,8 @@ export async function connect(getBridge) {
         if (m.info.mode === 'signed-out') {
           traffic.length = 0;
           logs.length = 0;
-          setState({ info: m.info, sections: {}, inspector: null });
+          // Nothing from the old session may pop up again after the next sign-in.
+          setState({ info: m.info, sections: {}, inspector: null, palette: false, recapOpen: false, toasts: [] });
         } else setState({ info: m.info });
         break;
       case 'nav':
@@ -128,10 +131,20 @@ export async function connect(getBridge) {
       case 'versions':
         setState({ versions: m.versions });
         break;
+      case 'costs':
+        setState({ costs: m.costs });
+        break;
       case 'alarm':
         setState({ alarm: m.alarm?.ringing ? m.alarm : null });
         if (!m.alarm?.ringing) stopSounds();
         break;
+      case 'silenced': {
+        // Silence was pressed (here, in the tray or on a notification): say what it does.
+        const one = !(m.count > 1);
+        const mins = Math.max(1, Math.round((m.quietMs || 300_000) / 60_000));
+        toast({ id: 'silenced', severity: 'info', icon: 'mute', title: 'Silenced', detail: `${one ? 'It stays quiet until it’s fixed' : 'They stay quiet until they’re fixed'}; anything new can ring again in ${mins} min.` });
+        break;
+      }
       case 'follow': {
         const h = followHandlers.get(m.id);
         if (h) h(m);
@@ -146,8 +159,15 @@ export async function connect(getBridge) {
       default:
     }
   });
-  const info = await bridge.invoke('app:hello');
-  setState({ info, ready: true, update: info.update || null, versions: info.versions || null });
+  let info;
+  try {
+    info = await bridge.invoke('app:hello');
+  } catch (e) {
+    // Without this the app would sit on its loading spinner forever.
+    setState({ bridgeError: `Flobi Pulse couldn't start: ${e?.message || e}` });
+    return;
+  }
+  setState({ info, ready: true, update: info.update || null, versions: info.versions || null, costs: info.costs || null });
   bridge
     .invoke('alarm:state')
     .then((a) => setState({ alarm: a?.ringing ? a : null }))
@@ -167,19 +187,22 @@ export function onFollow(id, fn) {
 }
 
 // ── Navigation ───────────────────────────────────────────────────────────────
-export const VIEWS = ['overview', 'recent', 'traffic', 'errors', 'crashes', 'logs', 'events', 'infrastructure', 'database', 'frontends', 'timeline', 'versions', 'settings'];
+export const VIEWS = ['overview', 'recent', 'traffic', 'errors', 'crashes', 'logs', 'events', 'infrastructure', 'database', 'frontends', 'timeline', 'versions', 'costs', 'settings'];
 
-/** to: { to: view | 'service' | 'pod' | ..., id?, filter?, ... } */
+/**
+ * to: { to: view | 'service' | 'pod' | 'alerts', id?, filter?, ... }
+ * 'alerts' (tray and notification clicks without a view of their own, "See all" next to a list
+ * of active alerts) opens Recent issues filtered to what's open now.
+ */
 export function navigate(to) {
   if (!to) return;
   if (typeof to === 'string') to = { to };
+  if (to.to === 'alerts') to = { to: 'recent', filter: 'open' };
   const t = to.to;
   if (t === 'service') {
     setState({ nav: { view: 'overview', params: {} }, inspector: { type: 'service', id: to.id } });
   } else if (t === 'pod') {
     setState((s) => ({ nav: s.nav.view === 'crashes' ? s.nav : { view: 'overview', params: {} }, inspector: { type: 'pod', id: to.id } }));
-  } else if (t === 'alerts') {
-    setState({ nav: { view: 'crashes', params: {} } });
   } else if (VIEWS.includes(t)) {
     const { to: _v, id, ...params } = to;
     setState({ nav: { view: t, params: { ...params, id, at: Date.now() } }, inspector: t === 'crashes' && id ? { type: 'crash', id } : t === 'errors' && id ? { type: 'error', id } : null });
@@ -198,7 +221,7 @@ export function toast(alert) {
   setState((s) => ({ toasts: [...s.toasts.slice(-3), { ...alert, alertId: alert.id, id }] }));
   setTimeout(() => dismissToast(id), alert.severity === 'critical' ? 9000 : 6000);
 }
-/** Stops the critical siren and acknowledges what it was ringing for. */
+/** Stops the critical siren; what it was ringing for stays quiet until it's fixed (a 'silenced' toast confirms). */
 export function silenceAlarm() {
   stopSounds();
   setState({ alarm: null });

@@ -30,6 +30,17 @@ function splitUrl(url) {
   }
 }
 
+/** A payload's message as text: an object becomes compact JSON (not "[object Object]"), bounded. */
+function messageText(v) {
+  if (typeof v === 'string') return v;
+  let s;
+  try {
+    s = JSON.stringify(v);
+  } catch {}
+  if (typeof s !== 'string') s = String(v);
+  return s.length > 4000 ? `${s.slice(0, 4000)}…` : s;
+}
+
 /**
  * @param {object} e raw LogEntry (REST JSON or decoded proto)
  * @param {{namespace:string, routeToService?:(host:string,path:string)=>string|null, podToService?:(pod:string, container:string)=>string|null}} ctx
@@ -81,6 +92,8 @@ export function normalizeEntry(e, ctx = {}) {
     return {
       kind: 'event',
       id,
+      // The Event object itself: Kubernetes re-exports it each time its count goes up.
+      uid: j.metadata?.uid || j.metadata?.name || null,
       ts: Date.parse(j.lastTimestamp || j.eventTime || j.firstTimestamp || '') || ts,
       type: j.type || 'Normal',
       reason: j.reason || '',
@@ -89,13 +102,15 @@ export function normalizeEntry(e, ctx = {}) {
       objectName: j.involvedObject.name,
       namespace: j.involvedObject.namespace,
       count: j.count || j.series?.count || 1,
+      host: j.source?.host || j.reportingInstance || null, // the node that reported it (kubelet events)
     };
   }
 
   // ── Container log line ────────────────────────────────────────────────────
   if (type === 'k8s_container') {
     const json = e.jsonPayload && Object.keys(e.jsonPayload).length ? e.jsonPayload : null;
-    const text = stripAnsi(e.textPayload ?? json?.message ?? json?.msg ?? (json ? JSON.stringify(json) : ''));
+    const message = json?.message ?? json?.msg;
+    const text = stripAnsi(e.textPayload ?? (message != null ? messageText(message) : json ? JSON.stringify(json) : ''));
     const pod = labels.pod_name || '';
     const container = labels.container_name || '';
     return {
@@ -104,8 +119,10 @@ export function normalizeEntry(e, ctx = {}) {
       ts,
       pod,
       container,
-      service: ctx.podToService?.(pod, container) || container || pod,
-      level: detectLevel(text, e.severity, json),
+      // The workload, like the live model says, also for pods that are gone: a container
+      // is often named differently ("brand" in "flobi-brand"), and errors are grouped per service.
+      service: ctx.podToService?.(pod, container) || workloadFromPodName(pod) || container || pod,
+      level: detectLevel(text, e.severity, json, { stream: /\/stdout$/.test(logName) ? 'stdout' : /\/stderr$/.test(logName) ? 'stderr' : null }),
       severity: e.severity || 'DEFAULT',
       text: text.length > 8000 ? `${text.slice(0, 8000)}…` : text,
       json: json && Object.keys(json).length > 1 ? json : null,
@@ -132,7 +149,8 @@ export function normalizeEntry(e, ctx = {}) {
 
   // ── Cloud Run container logs (renderer) ──────────────────────────────────
   if (type === 'cloud_run_revision') {
-    const text = stripAnsi(e.textPayload ?? e.jsonPayload?.message ?? '');
+    const message = e.jsonPayload?.message;
+    const text = stripAnsi(e.textPayload ?? (message != null ? messageText(message) : ''));
     return {
       kind: 'log',
       id,
@@ -151,6 +169,30 @@ export function normalizeEntry(e, ctx = {}) {
   return { kind: 'other', id, ts, type, text: e.textPayload || '' };
 }
 
+/**
+ * The workload a pod belongs to, from its name alone, for pods that are no longer in the
+ * model. Same answer as workloadOf() in model.mjs for these shapes; null when it can't tell.
+ *   Deployment   "<name>-<replica set hash, 6–10>-<5>"
+ *   CronJob      "<cronjob>-<scheduled minute, 8+ digits>-<5>"
+ *   StatefulSet  "<name>-<n>"
+ */
+// Kubernetes makes the replica set hash and a pod's random suffix from this alphabet (no
+// vowels, no 0/1/3), so "migrate-database-x2x9z" (a Job's pod) doesn't pass for a Deployment's.
+const K = '[bcdfghjklmnpqrstvwxz2456789]';
+const CRON_POD = new RegExp(`^(.+)-\\d{8,}-${K}{5}$`);
+const DEPLOYMENT_POD = new RegExp(`^(.+)-${K}{6,10}-${K}{5}$`);
+
+export function workloadFromPodName(pod) {
+  const p = String(pod || '');
+  // CronJob first: its job suffix also fits the Deployment shape when it's 8–10 digits.
+  const cron = p.match(CRON_POD);
+  if (cron) return cron[1];
+  const dep = p.match(DEPLOYMENT_POD);
+  if (dep) return dep[1];
+  const sts = p.match(/^(.+)-\d+$/);
+  return sts ? sts[1] : null;
+}
+
 /** A line read straight from the Kubernetes log API (no Cloud Logging metadata). */
 export function k8sLogLine({ text, ts, pod, container, service }) {
   let json = null;
@@ -159,6 +201,7 @@ export function k8sLogLine({ text, ts, pod, container, service }) {
       json = JSON.parse(text);
     } catch {}
   }
-  const shown = json ? json.message || json.msg || text : text;
+  const message = json && (json.message || json.msg);
+  const shown = message ? messageText(message) : text;
   return { kind: 'log', id: `k${ts}${Math.random().toString(36).slice(2, 7)}`, ts, pod, container, service, level: detectLevel(shown, null, json), text: stripAnsi(shown), json, source: 'k8s' };
 }

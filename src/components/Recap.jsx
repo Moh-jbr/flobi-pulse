@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from 'react';
 import { navigate, setState } from '../lib/store.js';
 import Icon from './icons.jsx';
 import { cx, SEV_TONE, TONE } from './ui.jsx';
-import { dayTime, duration, compact, clock, short } from '../lib/format.js';
+import { dayTime, duration, compact, clock, short, day } from '../lib/format.js';
 
 /** Incidents as table rows (Export on Timeline and in the recap sheet). */
 export const INCIDENT_COLUMNS = [
@@ -15,7 +15,13 @@ export const INCIDENT_COLUMNS = [
   { label: 'Details', get: (i) => i.detail || '' },
 ];
 
-const KIND_ICON = { crash: 'bolt', http: 'traffic', event: 'events', node: 'infrastructure', errors: 'errors', database: 'database', frontend: 'frontends', edge: 'globe', deploy: 'rocket' };
+const KIND_ICON = { crash: 'bolt', http: 'traffic', event: 'events', node: 'infrastructure', errors: 'errors', database: 'database', frontend: 'frontends', edge: 'globe', deploy: 'rocket', costs: 'receipt' };
+
+/** Incidents oldest first, the order the recap builds them in (a copy: the list belongs to the store). */
+export const byStart = (incidents) => [...(incidents || [])].sort((a, b) => a.start - b.start);
+
+/** "Today", "Yesterday" or "Mon, 28 Sep": the day part of dayTime(), worked out directly so it holds in every locale. */
+const lasted = (inc) => (inc.end > inc.start + 60_000 ? `for ${duration(inc.end - inc.start)}` : '');
 
 export function SummaryChips({ summary }) {
   if (!summary) return null;
@@ -48,19 +54,23 @@ export function TimelineStrip({ recap }) {
   const [hover, setHover] = useState(null);
   const { since, until, incidents = [], deploys = [] } = recap;
   const span = Math.max(1, until - since);
-  const lanes = useMemo(() => {
-    const out = [];
-    for (const inc of [...incidents].sort((a, b) => a.start - b.start)) {
-      let lane = out.findIndex((l) => l.end + span * 0.01 < inc.start);
+  const endOf = (inc) => Math.max(inc.start, inc.end ?? until);
+  // Which row each bar sits on, so overlapping incidents don't hide each other. Kept here:
+  // the incidents belong to the store and are never written to.
+  const { lanes, laneOf } = useMemo(() => {
+    const ends = [];
+    const laneOf = new Map();
+    for (const inc of byStart(incidents)) {
+      let lane = ends.findIndex((end) => end + span * 0.01 < inc.start);
       if (lane < 0) {
-        lane = out.length;
-        out.push({ end: 0 });
+        lane = ends.length;
+        ends.push(0);
       }
-      out[lane].end = Math.max(inc.end, inc.start + span * 0.012);
-      inc._lane = lane;
+      ends[lane] = Math.max(endOf(inc), inc.start + span * 0.012);
+      laneOf.set(inc, lane);
     }
-    return Math.max(1, out.length);
-  }, [incidents, span]);
+    return { lanes: Math.max(1, ends.length), laneOf };
+  }, [incidents, span, until]);
   const x = (t) => `${((t - since) / span) * 100}%`;
   const ticks = 6;
   return (
@@ -76,10 +86,13 @@ export function TimelineStrip({ recap }) {
           <button
             key={inc.id}
             type="button"
+            aria-label={[inc.title, dayTime(inc.start), lasted(inc)].filter(Boolean).join(', ')}
             onMouseEnter={() => setHover(inc)}
+            onFocus={() => setHover(inc)}
+            onBlur={() => setHover(null)}
             onClick={() => inc.view && (setState({ recapOpen: false }), navigate(inc.view))}
             className={cx('absolute h-3 rounded-full hover:brightness-110 transition-[filter]', inc.severity === 'critical' ? 'bg-red' : 'bg-orange')}
-            style={{ left: x(inc.start), width: `max(8px, ${((inc.end - inc.start) / span) * 100}%)`, top: 10 + inc._lane * 16 }}
+            style={{ left: x(inc.start), width: `max(8px, ${((endOf(inc) - inc.start) / span) * 100}%)`, top: 10 + (laneOf.get(inc) ?? 0) * 16 }}
           />
         ))}
       </div>
@@ -97,7 +110,7 @@ export function TimelineStrip({ recap }) {
         <div className="absolute z-10 glass-strong rounded-xl px-3 py-2 text-callout pointer-events-none max-w-[320px] animate-fade" style={{ left: `min(calc(${x(hover.start)}), calc(100% - 320px))`, top: -8, transform: 'translateY(-100%)' }}>
           <div className="font-semibold">{hover.title}</div>
           <div className="text-label-2 text-subheadline">
-            {dayTime(hover.start)} · {duration(Math.max(60_000, hover.end - hover.start))}
+            {dayTime(hover.start)} · {duration(Math.max(60_000, endOf(hover) - hover.start))}
           </div>
         </div>
       )}
@@ -108,7 +121,7 @@ export function TimelineStrip({ recap }) {
 export function IncidentList({ incidents, onNavigate }) {
   const byDay = useMemo(() => {
     const m = new Map();
-    for (const i of incidents) {
+    for (const i of byStart(incidents)) {
       const d = new Date(i.start).toDateString();
       if (!m.has(d)) m.set(d, []);
       m.get(d).push(i);
@@ -117,9 +130,9 @@ export function IncidentList({ incidents, onNavigate }) {
   }, [incidents]);
   return (
     <div className="flex flex-col gap-4">
-      {byDay.map(([day, list]) => (
-        <div key={day}>
-          <div className="text-subheadline font-semibold text-label-3 uppercase tracking-wide px-1 mb-1.5">{dayTime(list[0].start).replace(/ \d\d:\d\d$/, '')}</div>
+      {byDay.map(([dayKey, list]) => (
+        <div key={dayKey}>
+          <div className="text-subheadline font-semibold text-label-3 uppercase tracking-wide px-1 mb-1.5">{day(list[0].start)}</div>
           <div className="relative pl-5">
             <span className="absolute left-[7px] top-2 bottom-2 w-px bg-separator" />
             {list.map((inc) => (
@@ -131,7 +144,7 @@ export function IncidentList({ incidents, onNavigate }) {
                     <div className="flex items-center gap-2">
                       <Icon name={KIND_ICON[inc.kind] || 'dot'} size={14} className={TONE[SEV_TONE[inc.severity]].fg} />
                       <span className="text-headline font-semibold">{inc.title}</span>
-                      <span className="text-subheadline text-label-3 whitespace-nowrap">{inc.end > inc.start + 60_000 ? `for ${duration(inc.end - inc.start)}` : ''}</span>
+                      <span className="text-subheadline text-label-3 whitespace-nowrap">{lasted(inc)}</span>
                     </div>
                     {inc.detail && <div className="text-callout text-label-2 mt-1 whitespace-pre-line break-words selectable">{inc.detail}</div>}
                   </div>

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore, logs as globalRing, received, invoke, onFollow, inspect } from '../lib/store.js';
 import { ViewFixed } from '../components/Toolbar.jsx';
 import VirtualList from '../components/VirtualList.jsx';
@@ -6,7 +6,7 @@ import Select from '../components/Select.jsx';
 import { Segmented, SearchField, Button, cx, Spinner, Card, useNow } from '../components/ui.jsx';
 import Icon from '../components/icons.jsx';
 import ExportButton from '../components/ExportButton.jsx';
-import { LiveUnavailable, NewCount } from './Traffic.jsx';
+import { LiveUnavailable, NewCount, useLiveFeed, makeSearchText, cleanError } from './Traffic.jsx';
 import { clockMs, short, compact, dayTime } from '../lib/format.js';
 import { parseNest } from '../../electron/core/engine/log-parse.mjs';
 
@@ -25,7 +25,16 @@ const LOG_COLUMNS = [
   { label: 'Pod', get: (l) => l.pod },
   { label: 'Message', get: (l) => l.text },
 ];
-const cleanError = (e) => String(e?.message || e).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+// The store keeps this many lines of the all-services stream; a view of one service keeps as many.
+const RING_CAP = 20_000;
+const GLOBAL_STREAM = {
+  lines: globalRing,
+  get total() {
+    return received.logs;
+  },
+};
+const EMPTY = [];
+const lineSearchText = makeSearchText((l) => `${l.text} ${l.pod}`);
 
 /**
  * "Searching… 12 s" with a hint once it takes a while, so a wait never looks stuck.
@@ -43,43 +52,69 @@ function Waiting({ what, since, onCancel, giveUpAfter, giveUp }) {
   );
 }
 
+const wantedPods = (scope, pods) => (!scope ? EMPTY : scope.kind === 'pod' ? pods.filter((p) => p.name === scope.pod) : pods.filter((p) => p.service === scope.service && p.state !== 'done' && !p.terminal));
+const containerOf = (p) => p.mainContainer || p.containers?.[0]?.name || null;
+
+/**
+ * Follows the logs of one service's pods (or one pod) straight from Kubernetes.
+ * Lines land in `log` in arrival order ({ lines, total }, like the store's ring);
+ * the view merges them by time. Pods that show up (a rollout, a scale-up) get
+ * followed, pods that go away get unfollowed and forgotten.
+ */
 function useServiceFollow(scope, pods) {
-  const ring = useRef([]);
+  const key = scope ? `${scope.kind}:${scope.service}:${scope.pod || ''}` : null;
+  // A new scope gets a new log during the render itself, so its first frame never shows the old scope's lines.
+  const log = useRef(null);
+  if (!log.current || log.current.key !== key) log.current = { key, lines: [], total: 0, since: Date.now() };
   const [version, setVersion] = useState(0);
-  const [status, setStatus] = useState({}); // pod -> { state: 'opening'|'streaming'|'error'|'stopped', message }
-  const subs = useRef(new Map()); // pod -> {id, off}
+  const [status, setStatus] = useState({ key, pods: {} }); // pods: name → { state: 'opening'|'streaming'|'error'|'stopped'|'unreachable'|'forbidden', message }
+  const subs = useRef(new Map()); // pod → { id, off }
   const scheduled = useRef(false);
-  const startedAt = useRef(Date.now());
-  const setPod = (pod, st) => setStatus((s) => ({ ...s, [pod]: st }));
+  const setPod = (name, st) =>
+    setStatus((s) => {
+      const cur = s.key === key ? s.pods : {};
+      if (cur[name] && cur[name].state === st.state && cur[name].message === st.message) return s;
+      return { key, pods: { ...cur, [name]: st } };
+    });
+  // Forget pods that went away, including ones whose stream had failed.
+  const keepOnly = (names) =>
+    setStatus((s) => {
+      if (s.key !== key || Object.keys(s.pods).every((n) => names.has(n))) return s;
+      return { key, pods: Object.fromEntries(Object.entries(s.pods).filter(([n]) => names.has(n))) };
+    });
+  const stop = (name) => {
+    const entry = subs.current.get(name);
+    if (!entry) return;
+    subs.current.delete(name);
+    entry.off?.();
+    if (entry.id) invoke('logs:unfollow', { id: entry.id }).catch(() => {});
+  };
+
+  // Leaving the scope (or the page) closes every stream.
+  useEffect(
+    () => () => {
+      for (const name of [...subs.current.keys()]) stop(name);
+    },
+    [key],
+  );
 
   useEffect(() => {
-    ring.current = [];
-    startedAt.current = Date.now();
-    setStatus({});
-    setVersion((v) => v + 1);
-    return () => {
-      for (const { id, off } of subs.current.values()) {
-        off?.();
-        if (id) invoke('logs:unfollow', { id });
-      }
-      subs.current.clear();
-    };
-  }, [scope?.kind, scope?.service, scope?.pod]);
-
-  useEffect(() => {
-    if (!scope || scope.kind === 'all') return;
-    const wanted = scope.kind === 'pod' ? pods.filter((p) => p.name === scope.pod) : pods.filter((p) => p.service === scope.service && p.state !== 'done');
+    if (!key) return;
+    const wanted = wantedPods(scope, pods);
+    const names = new Set(wanted.map((p) => p.name));
+    for (const name of [...subs.current.keys()]) if (!names.has(name)) stop(name);
+    keepOnly(names);
     for (const p of wanted) {
       if (subs.current.has(p.name)) continue;
-      const container = p.mainContainer || p.containers?.[0]?.name || p.service;
       const entry = { id: null, off: null };
+      const target = log.current;
       subs.current.set(p.name, entry);
-      setPod(p.name, { state: 'opening' });
-      invoke('logs:follow', { pod: p.name, container, service: p.service })
+      setPod(p.name, { state: 'opening', message: null });
+      invoke('logs:follow', { pod: p.name, container: containerOf(p) || p.service, service: p.service })
         .then(({ id }) => {
           if (subs.current.get(p.name) !== entry) {
-            // The view moved on before the stream opened: close it right away.
-            invoke('logs:unfollow', { id });
+            // The view moved on (or the pod went away) before the stream opened: close it right away.
+            invoke('logs:unfollow', { id }).catch(() => {});
             return;
           }
           entry.id = id;
@@ -90,36 +125,38 @@ function useServiceFollow(scope, pods) {
             }
             const lines = m.lines || [];
             if (!lines.length) return;
-            setPod(p.name, { state: 'streaming' });
-            ring.current.push(...lines);
-            if (ring.current.length > 20000) ring.current.splice(0, ring.current.length - 20000);
+            setPod(p.name, { state: 'streaming', message: null });
+            for (const l of lines) target.lines.push(l);
+            target.total += lines.length;
+            if (target.lines.length > RING_CAP) target.lines.splice(0, target.lines.length - RING_CAP);
             if (!scheduled.current) {
               scheduled.current = true;
               requestAnimationFrame(() => {
                 scheduled.current = false;
-                ring.current.sort((a, b) => a.ts - b.ts);
                 setVersion((v) => v + 1);
               });
             }
           });
         })
         .catch((e) => {
+          if (subs.current.get(p.name) !== entry) return;
           subs.current.delete(p.name);
-          setPod(p.name, { state: 'error', message: String(e.message || e).replace(/^Error invoking remote method '[^']+': (Error: )?/, '') });
+          setPod(p.name, { state: 'error', message: cleanError(e) });
         });
     }
-  }, [scope, pods]);
+  }, [key, pods]);
 
-  const wanted = !scope || scope.kind === 'all' ? [] : scope.kind === 'pod' ? pods.filter((p) => p.name === scope.pod) : pods.filter((p) => p.service === scope.service && p.state !== 'done');
-  const states = Object.values(status).map((st) => st.state);
+  const wanted = wantedPods(scope, pods);
+  const podStatus = status.key === key ? status.pods : {};
+  const states = Object.values(podStatus).map((st) => st.state);
   const count = (...xs) => states.filter((x) => xs.includes(x)).length;
   return {
-    ring: ring.current,
+    log: log.current,
     version,
-    status,
+    status: podStatus,
     podCount: wanted.length,
-    since: startedAt.current,
-    container: wanted[0]?.mainContainer || wanted[0]?.containers?.[0]?.name || null,
+    since: log.current.since,
+    container: wanted[0] ? containerOf(wanted[0]) : null,
     streaming: count('streaming'),
     opening: count('opening'),
     // Pod logs not allowed for this key → the view switches to Cloud Logging.
@@ -131,37 +168,48 @@ function useServiceFollow(scope, pods) {
 
 export default function Logs() {
   const params = useStore((s) => s.nav.params);
-  const globalVersion = useStore((s) => s.logsVersion);
-  const pods = useStore((s) => s.sections.pods) || [];
-  const services = useStore((s) => s.sections.services) || [];
+  const pods = useStore((s) => s.sections.pods) || EMPTY;
+  const services = useStore((s) => s.sections.services) || EMPTY;
   const live = useStore((s) => s.sections.sources?.live);
+  // The 15 minutes before the live stream started, read from Google's logs on start: shown above
+  // its lines in the all-services view, when they lead straight into them (after waking up, the
+  // stream still holds its earlier lines). The same block sent again keeps its identity.
+  const before = useStore((s) => s.sections.logsBefore);
+  const beforeLines = useMemo(() => {
+    if (!before?.lines?.length) return null;
+    const first = globalRing[0];
+    return !first || (first.ts >= before.lines[0].ts && first.ts - before.until < 5 * 60_000) ? before.lines : null;
+  }, [before?.until, before?.lines?.length]);
   const [scope, setScope] = useState({ kind: 'all' });
   const [level, setLevel] = useState('all');
   const [q, setQ] = useState('');
   const [follow, setFollow] = useState(true);
-  const [paused, setPaused] = useState(null); // { rows, by: 'user'|'scroll', at }
+  const [paused, setPaused] = useState(null); // { rows, by: 'user'|'scroll', seen }
   const [history, setHistory] = useState(null); // { loading, items, range, error, since, args }
   const historyRun = useRef(0);
 
   // Deep links (from the recap, alerts, error groups)
   useEffect(() => {
     if (!params?.at) return;
+    if (params.pod || params.service) setPaused(null);
     if (params.pod) setScope({ kind: 'pod', pod: params.pod, service: params.service });
     else if (params.service) setScope({ kind: 'service', service: params.service });
     if (params.level) setLevel(params.level);
-    if (params.from) runHistory({ from: params.from, until: params.until, service: params.service, level: params.level });
+    if (params.from) runHistory({ from: params.from, until: params.until, service: params.service, pod: params.pod, level: params.level });
   }, [params?.at]);
 
-  const podList = useMemo(() => pods.filter((p) => p.state !== 'done'), [pods.length, pods.map((p) => p.name).join()]);
+  const podList = useMemo(() => pods.filter((p) => p.state !== 'done' && !p.terminal), [pods.map((p) => `${p.name}:${p.state === 'done' || !!p.terminal}`).join()]);
   const follow$ = useServiceFollow(scope.kind === 'all' ? null : scope, podList);
 
   async function runHistory(args) {
     const { from, until, service, level: lv, text } = args;
+    const pod = 'pod' in args ? args.pod : scope.kind === 'pod' ? scope.pod : undefined;
     const run = ++historyRun.current;
     setHistory({ loading: true, items: [], range: { from, until }, since: Date.now(), args });
     try {
-      const items = await invoke('logs:query', { from, until, service: service ?? (scope.kind !== 'all' ? scope.service : undefined), pod: scope.kind === 'pod' ? scope.pod : undefined, level: (lv ?? level) === 'all' ? undefined : lv ?? level, text: text ?? (q || undefined), limit: 2000 });
-      if (run === historyRun.current) setHistory({ loading: false, items, range: { from, until }, args });
+      const res = await invoke('logs:query', { from, until, service: service ?? (scope.kind !== 'all' ? scope.service : undefined), pod, level: (lv ?? level) === 'all' ? undefined : lv ?? level, text: text ?? (q || undefined), limit: 2000, withMeta: true });
+      const items = Array.isArray(res) ? res : res?.items || [];
+      if (run === historyRun.current) setHistory({ loading: false, items, truncated: !Array.isArray(res) && !!res?.truncated, range: { from, until }, args });
     } catch (e) {
       if (run === historyRun.current) setHistory({ loading: false, items: [], range: { from, until }, error: cleanError(e), args });
     }
@@ -206,22 +254,11 @@ export default function Logs() {
       alive = false;
     };
   }, [cloudMode, scope.kind, scope.service, scope.pod, cloudTry]);
-  const cloudRing = useMemo(() => {
-    if (!cloudMode) return null;
-    const seen = new Set();
-    const out = [];
-    for (const l of cloudInit?.items || []) if (!seen.has(l.id)) seen.add(l.id), out.push(l);
-    for (const l of globalRing) {
-      if (l.service !== scope.service || (scope.kind === 'pod' && l.pod !== scope.pod) || seen.has(l.id)) continue;
-      seen.add(l.id);
-      out.push(l);
-    }
-    return out.sort((a, b) => a.ts - b.ts);
-  }, [cloudMode, cloudInit, paused ? 0 : globalVersion, scope]);
 
   const [quiet, setQuiet] = useState(null); // { loading, items, error, since }
   const [quietTry, setQuietTry] = useState(0);
-  const silent = scope.kind !== 'all' && !cloudMode && !history && follow$.podCount > 0 && follow$.streaming > 0 && follow$.ring.length === 0;
+  const hasLive = follow$.log.total > 0;
+  const silent = scope.kind !== 'all' && !cloudMode && !history && follow$.podCount > 0 && follow$.streaming > 0 && !hasLive;
   // Only a new scope (or a retry) cancels a running check; its own state changes never do.
   const quietRun = useRef(0);
   useEffect(() => {
@@ -243,20 +280,69 @@ export default function Logs() {
     return () => clearTimeout(t);
   }, [silent, quiet, quietTry, scope.service, scope.pod]);
   // Earlier lines from that check stay above whatever the pods stream afterwards.
-  const followSource = useMemo(() => {
-    const extra = quiet?.items || [];
-    if (!extra.length) return follow$.ring;
-    const firstLive = follow$.ring[0]?.ts ?? Infinity;
-    return [...extra.filter((l) => l.ts < firstLive), ...follow$.ring];
-  }, [follow$.version, quiet]);
+  const followBase = useMemo(() => {
+    const extra = quiet?.items || EMPTY;
+    if (!extra.length) return null;
+    let first = Infinity;
+    for (const l of follow$.log.lines) if (l.ts < first) first = l.ts;
+    return first === Infinity ? extra : extra.filter((l) => l.ts < first);
+  }, [quiet, follow$.log, hasLive]);
   const [allSince] = useState(() => Date.now());
 
-  const liveSource = scope.kind === 'all' ? globalRing : cloudRing || followSource;
-  const source = history ? history.items : paused ? paused.rows : liveSource;
-  const version = history ? history.items.length : paused ? 0 : scope.kind === 'all' || cloudMode ? globalVersion : follow$.version + (quiet?.items?.length || 0);
-  // The exact lines on screen right now, so freezing never shifts them.
-  const onScreen = useRef({ rows: [], at: 0 });
-  const freeze = (by) => setPaused({ rows: onScreen.current.rows, by, at: onScreen.current.at });
+  const regex = useMemo(() => {
+    const m = q.trim().match(/^\/(.+)\/([a-z]*)$/);
+    if (!m) return null;
+    // The g and y flags make test() carry on from where the last match ended, skipping matches on the next line.
+    const flags = [...new Set(`${m[2].replace(/[gy]/g, '')}i`)].join('');
+    try {
+      return new RegExp(m[1], flags);
+    } catch {
+      return null;
+    }
+  }, [q]);
+  const ql = q.trim().toLowerCase();
+  const filterKey = `${level}\u0000${q.trim()}`;
+  const test = useMemo(() => {
+    const minRank = level === 'all' ? -1 : LEVEL_RANK[level];
+    return (l) => {
+      if (minRank >= 0 && (LEVEL_RANK[l.level] ?? 1) < minRank) return false;
+      if (regex) return regex.test(l.text);
+      return !ql || lineSearchText(l).includes(ql);
+    };
+  }, [filterKey]);
+
+  // The live lines, filtered as they arrive. Only the all-services view (and the Cloud
+  // Logging fallback) reads the store's stream, so only they re-render with it.
+  const usesGlobal = scope.kind === 'all' || cloudMode;
+  const globalVersion = useStore((s) => (usesGlobal && !history ? s.logsVersion : 0));
+  const inScope = (l) => l.service === scope.service && (scope.kind !== 'pod' || l.pod === scope.pod);
+  const feedKey = scope.kind === 'all' ? 'all' : `${cloudMode ? 'cloud' : 'pods'}:${scope.service}:${scope.kind === 'pod' ? scope.pod : ''}`;
+  const feed = useLiveFeed({
+    key: feedKey,
+    stream: usesGlobal ? GLOBAL_STREAM : follow$.log,
+    version: usesGlobal ? globalVersion : follow$.version,
+    base: scope.kind === 'all' ? beforeLines : cloudMode ? cloudInit?.items || null : followBase,
+    accept: cloudMode ? inScope : null,
+    byTime: scope.kind !== 'all',
+    // The live stream may also bring the last few of those lines (Google delivers them a little late).
+    dedupe: cloudMode || (scope.kind === 'all' && !!beforeLines),
+    test,
+    filterKey,
+    cap: RING_CAP,
+    active: !history,
+  });
+  // History results and the frozen lines of a pause are fixed lists: filtered again only when the filters change.
+  const fixed = history ? history.items : paused ? paused.rows : null;
+  const fixedItems = useMemo(() => (fixed ? fixed.filter(test) : null), [fixed, test]);
+  const items = fixedItems || feed.rows;
+  const source = fixed || feed.all;
+
+  const freeze = (by) => setPaused({ rows: feed.all.slice(), by, seen: feed.seen, key: feedKey });
+  // A pause belongs to the stream it froze: when the view switches streams (the pods' own logs
+  // ↔ Cloud Logging) its "N new" would compare positions in two different streams.
+  useEffect(() => {
+    if (paused && paused.key !== feedKey) setPaused(null);
+  }, [feedKey]);
   const onFollowChange = (f) => {
     setFollow(f);
     if (!f && !paused && !history) freeze('scroll');
@@ -266,31 +352,6 @@ export default function Logs() {
     setPaused(null);
     setFollow(true);
   };
-
-  const regex = useMemo(() => {
-    const m = q.match(/^\/(.+)\/([a-z]*)$/);
-    if (!m) return null;
-    try {
-      return new RegExp(m[1], m[2].includes('i') ? m[2] : `${m[2]}i`);
-    } catch {
-      return null;
-    }
-  }, [q]);
-
-  const items = useMemo(() => {
-    const ql = q.trim().toLowerCase();
-    const minRank = level === 'all' ? -1 : LEVEL_RANK[level];
-    const out = [];
-    const src = history || paused ? source : source.slice();
-    if (!history && !paused) onScreen.current = { rows: src, at: received.logs };
-    for (const l of src) {
-      if (level !== 'all' && (LEVEL_RANK[l.level] ?? 1) < minRank) continue;
-      if (scope.kind === 'service' && scope.kind !== 'all' && l.service !== scope.service && !history) continue;
-      if (regex ? !regex.test(l.text) : ql && !`${l.text} ${l.pod}`.toLowerCase().includes(ql)) continue;
-      out.push(l);
-    }
-    return out;
-  }, [version, source, level, q, regex, scope, history]);
 
   const rh = document.documentElement.dataset.density === 'compact' ? 22 : 26;
   const serviceOptions = services.map((s) => s.name).sort();
@@ -353,7 +414,7 @@ export default function Logs() {
             {
               label: 'One service, straight from its pods',
               options: serviceOptions.map((s) => {
-                const n = pods.filter((p) => p.service === s && p.state !== 'done').length;
+                const n = pods.filter((p) => p.service === s && p.state !== 'done' && !p.terminal).length;
                 return { value: s, label: short(s), description: s, meta: `${n} pod${n === 1 ? '' : 's'}` };
               }),
             },
@@ -418,6 +479,7 @@ export default function Logs() {
           History: {dayTime(history.range.from)} → {dayTime(history.range.until)}
           {history.loading && <Spinner />}
           {history.error && <span className="text-red">{history.error}</span>}
+          {history.truncated && <span className="text-orange">Google's search took too long, so this is only what came back in time. A shorter range shows everything.</span>}
         </div>
       )}
 
@@ -430,35 +492,26 @@ export default function Logs() {
           onFollowChange={onFollowChange}
           getKey={(l) => l.id}
           empty={emptyState}
-          renderRow={(l) => {
-            const lv = LEVEL[l.level] || LEVEL.INFO;
-            const idx = podIndex.get(l.pod) ?? 0;
-            return (
-              <button key={l.id} type="button" onClick={() => inspect('log', l.id, l)} data-copy={l.text} data-copy-label="Copy log line" style={{ height: rh }} className={cx('w-full text-left grid grid-cols-[96px_3px_120px_34px_minmax(0,1fr)] gap-2.5 items-center px-4 hover:bg-fill-4', l.level === 'ERROR' && 'bg-red-tint/50')}>
-                <span className="text-label-3 tabular">{clockMs(l.ts)}</span>
-                <span className="self-stretch my-1 rounded-full" style={{ background: POD_COLORS[idx % POD_COLORS.length] }} />
-                <span className="truncate text-label-2" title={l.pod}>
-                  {scope.kind === 'all' ? short(l.service) : l.pod?.slice(-5)}
-                </span>
-                <span className={cx('h-[16px] rounded-[4px] text-[9.5px] font-bold grid place-items-center font-sans tracking-wide', lv.cls)}>{lv.label}</span>
-                <MessageText text={l.text} dim={l.level === 'DEBUG'} />
-              </button>
-            );
-          }}
+          renderRow={(l) => <LogRow key={l.id} l={l} rh={rh} who={scope.kind === 'all' ? short(l.service) : l.pod?.slice(-5)} color={POD_COLORS[(podIndex.get(l.pod) ?? 0) % POD_COLORS.length]} />}
         />
         {paused?.by === 'scroll' && !history && (
           <button type="button" onClick={jumpToNewest} className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-elevated shadow-[var(--shadow-pop)] h-7 px-3 rounded-full text-callout font-medium inline-flex items-center gap-1.5 animate-toast font-sans z-20">
             <Icon name="follow" size={13} /> Jump to newest
-            <NewCount n={received.logs - paused.at} />
+            <NewCount n={feed.newSince(paused.seen)} />
           </button>
         )}
       </div>
+      {scope.kind === 'all' && !history && beforeLines && feed.all[0] === beforeLines[0] && (
+        <div className="px-6 -mt-2 mb-3 text-subheadline text-label-3">
+          The first lines are the {Math.round((before.until - before.since) / 60_000)} minutes before Flobi Pulse started, from Google's logs{before.capped ? ` (the latest ${before.lines.length})` : ''}. Live lines follow.
+        </div>
+      )}
       {scope.kind !== 'all' && !history && (
         <div className="px-6 -mt-2 mb-3 text-subheadline text-label-3">
           {cloudMode ? (
             <>
               Reading {scope.kind === 'pod' ? scope.pod : scope.service} from Cloud Logging, a few seconds behind.{' '}
-              {cloudReason === 'forbidden' ? 'This key isn’t allowed to read pod logs directly; SETUP.md step 1 shows the one-line fix.' : cloudReason === 'failed' ? 'Its pods aren’t sending their logs directly right now.' : null}
+              {cloudReason === 'forbidden' ? 'This key isn’t allowed to read pod logs directly. Whoever manages the team’s key can allow it.' : cloudReason === 'failed' ? 'Its pods aren’t sending their logs directly right now.' : null}
               {cloudReason === 'asked' && (
                 <button type="button" className="text-accent ml-1" onClick={() => setForceCloud(false)}>
                   Try the pods directly again
@@ -468,7 +521,7 @@ export default function Logs() {
           ) : (
             <>
               Reading the <span className="font-mono">{follow$.container || 'main'}</span> container of {scope.kind === 'pod' ? scope.pod : `${follow$.podCount} pod${follow$.podCount === 1 ? '' : 's'} of ${scope.service}`} straight from the Kubernetes API, same as <span className="font-mono">kubectl logs -f</span>, no delay.
-              {quiet?.items?.length > 0 && follow$.ring.length === 0 && ' The pods are connected but quiet, so the lines above are its last 15 minutes from Cloud Logging.'}
+              {quiet?.items?.length > 0 && !hasLive && ' The pods are connected but quiet, so the lines above are its last 15 minutes from Cloud Logging.'}
             </>
           )}
           {!cloudMode && follow$.streaming > 0 && follow$.streaming < follow$.podCount && (
@@ -496,6 +549,23 @@ function EmptyNote({ children, spinner, tone, action }) {
   );
 }
 
+// A row only renders again when its own props change: as lines stream in, the rows
+// already on screen stay as they are and only the new ones render.
+const LogRow = memo(function LogRow({ l, rh, who, color }) {
+  const lv = LEVEL[l.level] || LEVEL.INFO;
+  return (
+    <button type="button" onClick={() => inspect('log', l.id, l)} data-copy={l.text} data-copy-label="Copy log line" style={{ height: rh }} className={cx('w-full text-left grid grid-cols-[96px_3px_120px_34px_minmax(0,1fr)] gap-2.5 items-center px-4 hover:bg-fill-4', l.level === 'ERROR' && 'bg-red-tint/50')}>
+      <span className="text-label-3 tabular">{clockMs(l.ts)}</span>
+      <span className="self-stretch my-1 rounded-full" style={{ background: color }} />
+      <span className="truncate text-label-2" title={l.pod}>
+        {who}
+      </span>
+      <span className={cx('h-[16px] rounded-[4px] text-[9.5px] font-bold grid place-items-center font-sans tracking-wide', lv.cls)}>{lv.label}</span>
+      <MessageText text={l.text} dim={l.level === 'DEBUG'} />
+    </button>
+  );
+});
+
 function MessageText({ text, dim }) {
   const { context, message } = parseNest(text);
   return (
@@ -507,8 +577,3 @@ function MessageText({ text, dim }) {
 }
 
 export { LEVEL };
-export function LogLineCard({ line }) {
-  return (
-    <Card className="font-mono text-callout whitespace-pre-wrap break-words selectable">{line.text}</Card>
-  );
-}

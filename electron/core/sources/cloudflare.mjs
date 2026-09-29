@@ -7,11 +7,13 @@
 // has no 1-minute rollups, for example). Cloudflare answers "does not have
 // access to the path" for a locked one, so the client tries them in order and
 // remembers the first that works.
-import { json } from '../net/http.mjs';
+import { json, redact } from '../net/http.mjs';
 import { configureGuard } from '../net/guard.mjs';
 
 const API = 'https://api.cloudflare.com/client/v4';
 const HOUR = 3600_000;
+/** Pages read from a paged list (zones, Pages projects) at most. */
+const MAX_PAGES = 10;
 
 const ROLLUP_SUM = `sum {
           requests
@@ -35,12 +37,16 @@ export const EDGE_QUERY = `query PulseEdge($zoneTags: [string!], $since: Time!, 
   }
 }`;
 
-/** Per-minute counts from the adaptive (sampled) dataset. */
+/**
+ * Per-minute counts from the adaptive (sampled) dataset. One row per minute and
+ * status code, so a busy hour can pass the 1000-row limit: newest first, so what
+ * gets cut is the oldest minutes, never the ones happening now.
+ */
 export const EDGE_ADAPTIVE_QUERY = `query PulseEdgeAdaptive($zoneTags: [string!], $since: Time!, $until: Time!) {
   viewer {
     zones(filter: { zoneTag_in: $zoneTags }) {
       zoneTag
-      byMinute: httpRequestsAdaptiveGroups(limit: 1000, filter: { datetime_geq: $since, datetime_lt: $until }, orderBy: [datetimeMinute_ASC]) {
+      byMinute: httpRequestsAdaptiveGroups(limit: 1000, filter: { datetime_geq: $since, datetime_lt: $until }, orderBy: [datetimeMinute_DESC]) {
         count
         sum { edgeResponseBytes }
         dimensions { datetimeMinute edgeResponseStatus }
@@ -131,11 +137,15 @@ export function normalizeTraffic(mode, zone) {
 /**
  * Free plan fallback when per-hostname errors are locked: counts 5xx per zone
  * from the traffic rows. Returns the adaptive-groups shape the callers expect.
+ * A row is a bucket starting at `t` (an hour on hourly data, else a minute) and
+ * counts when it overlaps [sinceMs, untilMs): on hourly data the current hour
+ * started before a 15-minute window, and skipping it hid its errors 45 min an hour.
  */
-export function zoneErrorGroups(traffic, name, sinceMs = 0) {
+export function zoneErrorGroups(traffic, name, sinceMs = 0, untilMs = Infinity) {
+  const bucket = traffic?.mode === '1h' ? HOUR : 60_000;
   const byCode = new Map();
   for (const r of traffic?.rows || []) {
-    if (r.t < sinceMs) continue;
+    if (r.t + bucket <= sinceMs || r.t >= (untilMs ?? Infinity)) continue;
     for (const [code, n] of r.status) if (code >= 500) byCode.set(code, (byCode.get(code) || 0) + n);
   }
   return [...byCode.entries()].map(([code, count]) => ({ count, dimensions: { clientRequestHTTPHost: name, edgeResponseStatus: code } }));
@@ -148,10 +158,12 @@ const MODES = [
 ];
 
 export class CloudflareClient {
-  constructor({ token, accountId, zones = [] }) {
+  /** `request` is only replaced by tests. */
+  constructor({ token, accountId, zones = [], request = json }) {
     this.token = token;
     this.accountId = accountId;
     this.zoneNames = zones;
+    this.request = request;
     this.trafficMode = undefined; // '1m' | 'adaptive' | '1h' once known
     this.perHost = undefined;
   }
@@ -164,15 +176,47 @@ export class CloudflareClient {
     return { authorization: `Bearer ${this.token}`, 'content-type': 'application/json' };
   }
 
+  /** The request, with the token scrubbed from any error it produces. */
+  async _send(opts) {
+    try {
+      return await this.request(opts);
+    } catch (e) {
+      if (e && typeof e.message === 'string') e.message = redact(e.message, this.token);
+      throw e;
+    }
+  }
+
+  async _raw(path) {
+    const res = await this._send({ url: `${API}${path}`, headers: this._headers(), timeoutMs: 30_000 });
+    if (res && res.success === false) throw new Error(redact(res.errors?.[0]?.message || 'Cloudflare API error', this.token));
+    return res;
+  }
+
   async _get(path) {
-    const res = await json({ url: `${API}${path}`, headers: this._headers(), timeoutMs: 30_000 });
-    if (res && res.success === false) throw new Error(res.errors?.[0]?.message || 'Cloudflare API error');
-    return res?.result;
+    return (await this._raw(path))?.result;
+  }
+
+  /**
+   * Every page of a paged list, up to MAX_PAGES. The first request is the one the
+   * app always sent; later pages add `page=N` while result_info says there are more.
+   */
+  async _list(path, perPage) {
+    const out = [];
+    for (let page = 1; page <= MAX_PAGES; page++) {
+      const q = new URLSearchParams({ ...(perPage ? { per_page: String(perPage) } : {}), ...(page > 1 ? { page: String(page) } : {}) }).toString();
+      const res = await this._raw(q ? `${path}?${q}` : path);
+      const items = Array.isArray(res?.result) ? res.result : [];
+      out.push(...items);
+      const info = res?.result_info || {};
+      const pages = Number(info.total_pages) || (info.total_count && info.per_page ? Math.ceil(info.total_count / info.per_page) : 0);
+      if (!items.length || !pages || page >= pages) break;
+    }
+    return out;
   }
 
   async graphql(query, variables) {
-    const res = await json({ method: 'POST', url: `${API}/graphql`, headers: this._headers(), body: JSON.stringify({ query, variables }), timeoutMs: 45_000 });
-    if (res?.errors?.length) throw new Error(`Cloudflare analytics: ${res.errors[0].message}`);
+    const res = await this._send({ method: 'POST', url: `${API}/graphql`, headers: this._headers(), body: JSON.stringify({ query, variables }), timeoutMs: 45_000 });
+    if (res?.errors?.length) throw new Error(redact(`Cloudflare analytics: ${res.errors[0].message}`, this.token));
     return res?.data;
   }
 
@@ -182,7 +226,7 @@ export class CloudflareClient {
   }
 
   async zones() {
-    const all = (await this._get('/zones?per_page=50')) || [];
+    const all = await this._list('/zones', 50); // 50 is the most Cloudflare returns per page
     const wanted = new Set(this.zoneNames.map((z) => z.toLowerCase()));
     return all
       .filter((z) => !wanted.size || wanted.has(z.name.toLowerCase()))
@@ -191,25 +235,39 @@ export class CloudflareClient {
 
   /**
    * Recent edge traffic per zone, from the finest dataset the plan allows.
+   * With `since`, it covers [since, until] (e.g. a recap's range) instead of the
+   * dataset's usual window, skipping datasets too fine to span that range.
    * @returns {Promise<{mode:string, windowMs:number, zones: Map<string, object>}>} zoneTag → normalized traffic
    */
-  async traffic(zoneIds, until = Date.now()) {
+  async traffic(zoneIds, until = Date.now(), since = null) {
     if (this.trafficMode && this.trafficMode !== '1m' && Date.now() - this.trafficModeAt > 6 * HOUR) this.trafficMode = undefined; // plans change
     const start = Math.max(0, MODES.findIndex((m) => m.mode === this.trafficMode));
+    const modes = MODES.slice(start);
+    const span = since == null ? 0 : until - since;
     let lastNoAccess = null;
-    for (const m of MODES.slice(start)) {
+    // A dataset passed over for the range says nothing about the plan: then the
+    // remembered mode (used by the live view) stays as it was.
+    let skipped = false;
+    for (const [i, m] of modes.entries()) {
+      if (span > m.window && i < modes.length - 1) {
+        skipped = true;
+        continue;
+      }
+      const from = since == null ? until - m.window : Math.max(since, until - m.window);
       try {
-        const data = await this.graphql(m.query, { zoneTags: zoneIds, since: new Date(until - m.window).toISOString(), until: new Date(until).toISOString() });
-        if (this.trafficMode !== m.mode) this.trafficModeAt = Date.now();
-        this.trafficMode = m.mode;
+        const data = await this.graphql(m.query, { zoneTags: zoneIds, since: new Date(from).toISOString(), until: new Date(until).toISOString() });
+        if (!skipped) {
+          if (this.trafficMode !== m.mode) this.trafficModeAt = Date.now();
+          this.trafficMode = m.mode;
+        }
         const zones = new Map((data?.viewer?.zones || []).map((z) => [z.zoneTag, normalizeTraffic(m.mode, z)]));
-        return { mode: m.mode, windowMs: m.window, zones };
+        return { mode: m.mode, windowMs: until - from, zones };
       } catch (e) {
         if (!isNoAccess(e)) throw e;
         lastNoAccess = e;
       }
     }
-    this.trafficMode = undefined;
+    if (!skipped) this.trafficMode = undefined;
     throw lastNoAccess;
   }
 
@@ -238,13 +296,14 @@ export class CloudflareClient {
         this.perHostCheckedAt = Date.now();
       }
     }
-    const t = traffic || (await this.traffic(ids, until));
-    return { perHost: false, zones: ids.map((id) => ({ zoneTag: id, httpRequestsAdaptiveGroups: zoneErrorGroups(t.zones.get(id), zones.find((x) => x.id === id)?.name || id, since) })) };
+    // Without traffic already fetched for this window (the recap), read it for [since, until].
+    const t = traffic || (await this.traffic(ids, until, since));
+    return { perHost: false, zones: ids.map((id) => ({ zoneTag: id, httpRequestsAdaptiveGroups: zoneErrorGroups(t.zones.get(id), zones.find((x) => x.id === id)?.name || id, since, until) })) };
   }
 
   async pagesProjects(accountId = this.accountId) {
     if (!accountId) return [];
-    const list = (await this._get(`/accounts/${accountId}/pages/projects`)) || [];
+    const list = await this._list(`/accounts/${accountId}/pages/projects`);
     return list.map((p) => {
       const d = p.latest_deployment || p.canonical_deployment || {};
       const stage = d.latest_stage || {};

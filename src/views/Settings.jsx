@@ -1,11 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import { useStore, invoke, setState as setStore } from '../lib/store.js';
 import { ViewScroll } from '../components/Toolbar.jsx';
-import { Card, Button, Toggle, Segmented, Slider, TextField, StatusDot, cx, Pill } from '../components/ui.jsx';
+import { Card, Button, Toggle, Segmented, Slider, TextField, StatusDot, cx, Pill, Kbd } from '../components/ui.jsx';
 import Icon from '../components/icons.jsx';
 import { playSound, stopSounds } from '../lib/sounds.js';
 import CloudSqlForm, { DatabaseKey } from '../components/CloudSqlForm.jsx';
-import { ago } from '../lib/format.js';
+import CostsSettings from '../components/CostsSettings.jsx';
+import { ago, clockHM } from '../lib/format.js';
+import { isMac, shortcut } from '../lib/platform.js';
+import { cleanError as clean } from './Traffic.jsx';
+import { applyGlass } from '../lib/appearance.js';
 
 function Group({ title, footer, children }) {
   return (
@@ -37,10 +41,8 @@ function Row({ label, detail, children, icon, tone }) {
 }
 
 function statusTone(st) {
-  return !st ? 'gray' : st === 'ok' || st === 'streaming' ? 'green' : st === 'connecting' ? 'accent' : st === 'off' ? 'gray' : st === 'degraded' || st === 'unavailable' ? 'orange' : 'red';
+  return !st ? 'gray' : st === 'ok' || st === 'streaming' ? 'green' : st === 'connecting' ? 'accent' : st === 'off' || st === 'offline' ? 'gray' : st === 'degraded' || st === 'unavailable' ? 'orange' : 'red';
 }
-
-const clean = (e) => String(e?.message || e).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
 
 const INTEGRATION = {
   sentry: { title: 'Sentry', sub: 'Frontend errors from the React apps', icon: 'errors', tone: 'bg-purple', placeholder: 'Integration token (not the Client Secret)' },
@@ -82,7 +84,7 @@ function IntegrationForm({ kind, info, sources }) {
           {src?.status === 'off' || !src ? (cfg.hasToken ? 'Configured' : 'Not connected') : src.status}
         </span>
       </div>
-      {src?.message && src.status !== 'off' && src.status !== 'ok' && <div className="text-callout text-orange selectable">{src.message}</div>}
+      {src?.message && src.status !== 'off' && src.status !== 'ok' && <div className={cx('text-callout selectable', src.status === 'offline' ? 'text-label-2' : 'text-orange')}>{src.message}</div>}
       <div className="grid grid-cols-[120px_minmax(0,1fr)] gap-x-3 gap-y-2 items-center text-callout">
         {kind === 'sentry' ? (
           <>
@@ -181,9 +183,22 @@ function UptimeEditor({ info }) {
   const [list, setList] = useState(info.uptime || []);
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
   const update = (i, patch) => {
     setList(list.map((u, j) => (i === j ? { ...u, ...patch } : u)));
     setDirty(true);
+  };
+  const save = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const info2 = await invoke('uptime:set', { targets: list });
+      setStore({ info: info2 });
+      setDirty(false);
+    } catch (e) {
+      setError(clean(e));
+    }
+    setBusy(false);
   };
   return (
     <div className="px-4 py-3 flex flex-col gap-2">
@@ -209,19 +224,9 @@ function UptimeEditor({ info }) {
         <Button size="sm" icon="globe" onClick={() => (setList([...list, { name: '', url: 'https://', group: 'frontend' }]), setDirty(true))}>
           Add URL
         </Button>
-        <span className="flex-1" />
+        <span className={cx('flex-1 text-callout text-red selectable', !error && 'invisible')}>{error ? `Couldn't save: ${error}` : ''}</span>
         {dirty && (
-          <Button
-            variant="primary"
-            loading={busy}
-            onClick={async () => {
-              setBusy(true);
-              const info2 = await invoke('uptime:set', { targets: list });
-              setStore({ info: info2 });
-              setDirty(false);
-              setBusy(false);
-            }}
-          >
+          <Button variant="primary" loading={busy} onClick={save}>
             Save checks
           </Button>
         )}
@@ -264,12 +269,50 @@ function SoundVolume({ value, onSave }) {
   );
 }
 
+/**
+ * The glass follows the slider as it moves; the setting is saved once it rests (let go,
+ * or 400 ms without a change), not once per step: each save is an IPC call and a disk write.
+ */
+function GlassSlider({ value, onSave }) {
+  const [v, setV] = useState(value);
+  const timer = useRef(null);
+  const pending = useRef(null);
+  const save = useRef(onSave);
+  save.current = onSave;
+  useEffect(() => {
+    if (pending.current == null) setV(value);
+  }, [value]);
+  const flush = () => {
+    clearTimeout(timer.current);
+    if (pending.current == null) return;
+    const g = pending.current;
+    pending.current = null;
+    save.current(g);
+  };
+  useEffect(() => flush, []);
+  const change = (g) => {
+    setV(g);
+    // Same mapping as the app's appearance (App.jsx), which takes over once the setting is saved.
+    applyGlass(g);
+    pending.current = g;
+    clearTimeout(timer.current);
+    timer.current = setTimeout(flush, 400);
+  };
+  return (
+    <div className="flex items-center gap-3 w-64" onPointerUp={flush} onKeyUp={flush}>
+      <span className="text-subheadline text-label-2">Clear</span>
+      <Slider value={v} onChange={change} className="flex-1" />
+      <span className="text-subheadline text-label-2">Tinted</span>
+    </div>
+  );
+}
+
 function UpdatesRow({ version }) {
   const u = useStore((st) => st.update);
   const status = u?.status || 'unsupported';
   const pct = Math.round((u?.progress || 0) * 100);
   const detail = {
-    idle: u?.error || (u?.lastError ? `Last check failed: ${u.lastError}. Trying again in 2 minutes.` : u?.checkedAt ? `Up to date · checked ${ago(u.checkedAt)}` : 'Up to date'),
+    idle: u?.error || (u?.lastError ? `Last check failed: ${u.lastError}. ${u.retryAt > Date.now() ? `Trying again at ${clockHM(u.retryAt)}.` : 'Trying again soon.'}` : u?.checkedAt ? `Up to date · checked ${ago(u.checkedAt)}` : 'Up to date'),
     checking: 'Checking for a new version…',
     available: `Version ${u?.version} is ready to install`,
     downloading: `Downloading version ${u?.version} · ${pct}%`,
@@ -310,6 +353,9 @@ export default function Settings() {
 
   const identity = info.identity;
   const demo = info.mode === 'demo';
+  const mac = isMac();
+  // Without an OS keychain (some Linux desktops) secrets are still saved, but not encrypted: say so.
+  const keychain = info.secretsEncrypted;
 
   return (
     <ViewScroll inner="max-w-[920px]">
@@ -331,13 +377,23 @@ export default function Settings() {
         <Row label="Cluster" detail={`${session?.cluster?.name || info.team.clusterName} · ${session?.cluster?.location || info.team.clusterLocation}${session?.cluster?.endpoint ? ` · ${session.cluster.endpoint}` : ''}`} icon="infrastructure" tone="bg-indigo" />
       </Group>
 
-      <Group title="Integrations" footer="Tokens are encrypted with your computer's keychain and never leave this machine except to talk to Sentry, Cloudflare or GitHub. The GitHub token can only read release notes.">
+      <Group
+        title="Integrations"
+        footer={`${keychain ? "Tokens are encrypted with your computer's keychain and" : "Tokens are saved on this computer without encryption, because this system has no keychain Flobi Pulse can use. They"} never leave this machine except to talk to Sentry, Cloudflare or GitHub. The app only uses the GitHub token to read release notes and billing (for Costs).`}
+      >
         <IntegrationForm kind="sentry" info={info} sources={sources} />
         <IntegrationForm kind="cloudflare" info={info} sources={sources} />
         {info.integrations.github && <IntegrationForm kind="github" info={info} sources={sources} />}
       </Group>
 
-      <Group title="Database" footer="Leave both empty when the database is in the same project as the cluster: the app finds it by itself. When it lives in another Google Cloud project, add a key made in that project (the app then finds the instance there), or its connection name if the main key can already read that project. The database key is only used for Cloud SQL status and Postgres logs, is encrypted with your computer's keychain, and is removed when you sign out.">
+      <Group title="Costs" footer="For the Costs page. Reading billing is free: BigQuery’s table preview of the one table set here (never a query, which BigQuery would bill), and Cloudflare’s and GitHub’s billing APIs, all read-only. Items and rates stay on this computer.">
+        <CostsSettings info={info} />
+      </Group>
+
+      <Group
+        title="Database"
+        footer={`Leave both empty when the database is in the same project as the cluster: the app finds it by itself. When it lives in another Google Cloud project, add a key made in that project (the app then finds the instance there), or its connection name if the main key can already read that project. The database key is only used for Cloud SQL status and Postgres logs, ${keychain ? "is encrypted with your computer's keychain" : 'is saved without encryption (this system has no keychain)'}, and is removed when you sign out.`}
+      >
         <div className="px-4 pt-3 text-body">Cloud SQL instance</div>
         <CloudSqlForm />
         <DatabaseKey />
@@ -347,7 +403,16 @@ export default function Settings() {
         <UptimeEditor info={info} />
       </Group>
 
-      <Group title="Notifications" footer="When the window is in front you get an in-app banner instead of a system notification. Sounds play even while Flobi Pulse sits in the tray.">
+      <Group
+        title="Notifications"
+        footer={
+          <>
+            When the window is in front you get an in-app banner instead of a system notification. Sounds play even while Flobi Pulse sits in the tray.
+            <br />
+            Silence keeps a problem quiet until it’s been fixed for 30 min, even if it comes back or the app reconnects. For 5 min after, nothing new rings either.
+          </>
+        }
+      >
         <Row label="Critical alerts" detail="Service down, crash loops, out-of-memory, failing requests, database down" icon="bolt" tone="bg-red">
           <Toggle checked={s.notifications.critical} onChange={(v) => set({ notifications: { critical: v } })} label="Critical alerts" />
         </Row>
@@ -360,7 +425,7 @@ export default function Settings() {
         <Row label="Informational" detail="Everything else" icon="info" tone="bg-gray">
           <Toggle checked={s.notifications.info} onChange={(v) => set({ notifications: { info: v } })} label="Informational" />
         </Row>
-        <Row label="Alert sounds" detail="A chime for warnings and a loud alarm for critical alerts" icon="bell" tone="bg-pink-500">
+        <Row label="Alert sounds" detail="A chime for warnings and a loud alarm for critical alerts" icon="bell" tone="bg-purple">
           <Toggle checked={s.notifications.sound} onChange={(v) => set({ notifications: { sound: v } })} label="Alert sounds" />
         </Row>
         {s.notifications.sound && (
@@ -389,11 +454,7 @@ export default function Settings() {
           />
         </Row>
         <Row label="Glass" detail="How see-through the sidebar, toolbars and sheets are" icon="sidebar" tone="bg-teal">
-          <div className="flex items-center gap-3 w-64">
-            <span className="text-subheadline text-label-2">Clear</span>
-            <Slider value={s.appearance.glass} onChange={(v) => set({ appearance: { glass: v } })} className="flex-1" />
-            <span className="text-subheadline text-label-2">Tinted</span>
-          </div>
+          <GlassSlider value={s.appearance.glass} onSave={(v) => set({ appearance: { glass: v } })} />
         </Row>
         <Row label="Density" detail="Row height in tables and logs" icon="events" tone="bg-gray">
           <Segmented
@@ -408,7 +469,7 @@ export default function Settings() {
       </Group>
 
       <Group title="General">
-        <Row label="Keep running when the window is closed" detail="Stays in the menu bar / system tray so alerts keep coming">
+        <Row label="Keep running when the window is closed" detail={`Stays in the ${mac ? 'menu bar' : 'system tray'} so alerts keep coming`}>
           <Toggle checked={s.general.keepRunningInTray} onChange={(v) => set({ general: { keepRunningInTray: v } })} label="Keep running in tray" />
         </Row>
         <Row label="Open at login">
@@ -417,6 +478,19 @@ export default function Settings() {
         <Row label="Include info logs in the live stream" detail="Turn off to stream only warnings and errors (lighter on busy days)">
           <Toggle checked={s.general.liveIncludesInfoLogs} onChange={(v) => set({ general: { liveIncludesInfoLogs: v } })} label="Include info logs" />
         </Row>
+      </Group>
+
+      <Group title="Keyboard shortcuts">
+        {[
+          ['Search pages, services and actions', shortcut('K')],
+          ['Open Settings', shortcut(',')],
+          ['Go to a page in the sidebar', `${shortcut('1')} to ${shortcut('9')}`],
+          ['Close the side panel', 'Esc'],
+        ].map(([label, keys]) => (
+          <Row key={label} label={label}>
+            <Kbd>{keys}</Kbd>
+          </Row>
+        ))}
       </Group>
 
       <Group title="Data sources" footer={denied.length ? null : 'The read-only guard has not blocked anything this session.'}>

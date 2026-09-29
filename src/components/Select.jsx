@@ -5,10 +5,10 @@
 //   <Select value={v} onChange={setV} options={[{ value, label, description?, icon?, dot? }]} />
 //   <Select groups={[{ label, options: [...] }]} searchable />
 //   <Select placeholder="Search history…" action options={...} onChange={run} />   ← menu of actions
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import Icon from './icons.jsx';
-import { cx, StatusDot } from './ui.jsx';
+import { cx, StatusDot, LAYER, useLayer } from './ui.jsx';
 
 function flatten(options, groups) {
   if (groups) return groups.flatMap((g, gi) => g.options.map((o) => ({ ...o, group: g.label, gi })));
@@ -33,6 +33,7 @@ export default function Select({
 }) {
   const btn = useRef(null);
   const list = useRef(null);
+  const id = useId();
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
   const [active, setActive] = useState(0);
@@ -74,6 +75,8 @@ export default function Select({
     close();
     onChange?.(o.value, o);
   };
+  // Escape closes the list (and only the list) wherever focus is; focus goes back to the trigger.
+  useLayer(open, LAYER.picker, () => close());
 
   useLayoutEffect(() => {
     if (!open) return;
@@ -104,11 +107,7 @@ export default function Select({
       }
       return;
     }
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      e.stopPropagation();
-      close();
-    } else if (e.key === 'ArrowDown') {
+    if (e.key === 'ArrowDown') {
       e.preventDefault();
       setActive((a) => Math.min(shown.length - 1, a + 1));
     } else if (e.key === 'ArrowUp') {
@@ -128,6 +127,11 @@ export default function Select({
 
   const h = size === 'md' ? 'h-7 text-body' : 'h-6 text-callout';
   const label = current ? current.label : placeholder;
+  const listId = `${id}-list`;
+  const optionId = (i) => `${id}-o${i}`;
+  // Focus stays on the trigger (or in the filter field) while the list is open; this tells
+  // screen readers which option the arrow keys are on.
+  const activeDescendant = open && shown[active] ? optionId(active) : undefined;
 
   return (
     <>
@@ -136,11 +140,14 @@ export default function Select({
         type="button"
         aria-haspopup="listbox"
         aria-expanded={open}
+        aria-controls={open ? listId : undefined}
+        aria-activedescendant={canSearch ? undefined : activeDescendant}
         aria-label={ariaLabel}
         onClick={() => (open ? close() : openMenu())}
         onKeyDown={onKey}
         className={cx(
-          'no-drag press inline-flex items-center gap-1.5 rounded-full bg-fill-3 hover:bg-fill-2 pl-2.5 pr-2 min-w-0 transition-colors outline-none',
+          // The app's focus ring (an accent outline, see :focus-visible in styles.css) shows on keyboard focus.
+          'no-drag press inline-flex items-center gap-1.5 rounded-full bg-fill-3 hover:bg-fill-2 pl-2.5 pr-2 min-w-0 transition-colors',
           h,
           open && 'bg-fill-2 shadow-[0_0_0_3px_var(--accent-tint)]',
           className,
@@ -155,9 +162,11 @@ export default function Select({
       {open &&
         pos &&
         createPortal(
-          <div className="fixed inset-0 z-[60] no-drag" onMouseDown={(e) => e.target === e.currentTarget && close(false)}>
+          <div className="fixed inset-0 z-picker no-drag" data-layer="picker" onMouseDown={(e) => e.target === e.currentTarget && close(false)}>
             <div
+              id={listId}
               role="listbox"
+              aria-label={ariaLabel || placeholder}
               className="absolute rounded-[14px] bg-elevated shadow-[var(--shadow-pop),0_0_0_0.5px_var(--separator)] overflow-hidden animate-sheet flex flex-col"
               style={{ left: pos.left, top: pos.top, bottom: pos.bottom, width: pos.width, maxHeight: pos.maxH, transformOrigin: pos.bottom != null ? 'bottom left' : 'top left' }}
             >
@@ -165,11 +174,12 @@ export default function Select({
                 <div className="p-1.5 hairline-b shrink-0">
                   <label className="flex items-center gap-2 h-7 px-2 rounded-[9px] bg-fill-4">
                     <Icon name="search" size={13} className="text-label-3" />
-                    <input autoFocus value={q} onChange={(e) => (setQ(e.target.value), setActive(0))} onKeyDown={onKey} placeholder="Filter…" spellCheck={false} className="flex-1 min-w-0 bg-transparent outline-none text-callout placeholder:text-label-3" />
+                    <input autoFocus value={q} onChange={(e) => (setQ(e.target.value), setActive(0))} onKeyDown={onKey} placeholder="Filter…" aria-label="Filter" aria-controls={listId} aria-activedescendant={activeDescendant} spellCheck={false} className="flex-1 min-w-0 bg-transparent outline-none text-callout placeholder:text-label-3" />
                   </label>
                 </div>
               )}
-              <div ref={list} className="overflow-y-auto p-1 min-h-0">
+              {/* Clicking an option mustn't take focus from the trigger or the filter field (the list's own scrollbar still works). */}
+              <div ref={list} className="overflow-y-auto p-1 min-h-0" onMouseDown={(e) => e.target !== e.currentTarget && e.preventDefault()}>
                 {!shown.length && <div className="px-3 py-2.5 text-callout text-label-3">Nothing matches “{q}”.</div>}
                 {shown.map((o, i) => {
                   const newGroup = o.group && (i === 0 || shown[i - 1].group !== o.group);
@@ -179,8 +189,10 @@ export default function Select({
                       {newGroup && <div className={cx('px-2.5 pt-2 pb-1 text-footnote font-semibold text-label-3 uppercase tracking-wide', i > 0 && 'mt-1 hairline-t')}>{o.group}</div>}
                       <button
                         type="button"
+                        id={optionId(i)}
                         role="option"
                         aria-selected={selected}
+                        tabIndex={-1}
                         data-i={i}
                         disabled={o.disabled}
                         onMouseEnter={() => setActive(i)}

@@ -3,10 +3,14 @@
 // them through the same pipeline. No credentials, no network. Pure JS.
 import { normalizeEntry, k8sLogLine } from './normalize.mjs';
 import { fmtDuration } from './recap.mjs';
+import { loadPastWeek, processSlice } from './backfill.mjs';
+import { lastMonths, DEFAULT_COSTS } from './costs.mjs';
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
+const DAY = 24 * HOUR;
 const NS = 'flobi';
+const iso = (ms) => new Date(ms).toISOString();
 
 // Seeded PRNG so screenshots and demos look the same every run.
 function mulberry32(a) {
@@ -98,6 +102,33 @@ const ERRORS = {
   'flobi-handoff': ['Zip stream aborted by client after {ms}ms'],
 };
 
+// Unexpected exceptions as Nest prints them: its "ERROR [ExceptionsHandler]" line, then the
+// exception and its stack frames. In GKE each of these lines is a log entry of its own.
+const EXCEPTIONS = {
+  'flobi-gateway': [
+    "Cannot read properties of undefined (reading 'workspaceId')",
+    "TypeError: Cannot read properties of undefined (reading 'workspaceId')",
+    '    at WorkspaceGuard.canActivate (/app/dist/common/guards/workspace.guard.js:24:41)',
+    '    at GuardsConsumer.tryActivate (/app/node_modules/@nestjs/core/guards/guards-consumer.js:15:34)',
+    '    at canActivateFn (/app/node_modules/@nestjs/core/router/router-execution-context.js:134:59)',
+    '    at /app/node_modules/@nestjs/core/router/router-execution-context.js:42:37',
+    '    at /app/node_modules/@nestjs/core/router/router-proxy.js:9:23',
+    '    at Layer.handle [as handle_request] (/app/node_modules/express/lib/router/layer.js:95:5)',
+    '    at next (/app/node_modules/express/lib/router/route.js:149:13)',
+    '    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)',
+  ],
+  'flobi-drive': [
+    'duplicate key value violates unique constraint "files_folder_id_name_key"',
+    'QueryFailedError: duplicate key value violates unique constraint "files_folder_id_name_key"',
+    '    at PostgresQueryRunner.query (/app/node_modules/typeorm/driver/postgres/PostgresQueryRunner.js:219:19)',
+    '    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)',
+    '    at async InsertQueryBuilder.execute (/app/node_modules/typeorm/query-builder/InsertQueryBuilder.js:106:33)',
+    '    at async FilesService.create (/app/dist/files/files.service.js:88:24)',
+    '    at async FilesController.upload (/app/dist/files/files.controller.js:41:22)',
+    '    at async /app/node_modules/@nestjs/core/router/router-execution-context.js:46:28',
+  ],
+};
+
 const PATHS = [
   ['GET', '/users/me', 'flobi-gateway', 30, 40],
   ['GET', '/drive/files?folder=fd_{id}', 'flobi-gateway', 60, 60],
@@ -185,8 +216,125 @@ export class DemoConnector {
     p.setCloudRun([{ name: 'flobi-artwork-render', url: 'https://flobi-artwork-render-374098310188.europe-west1.run.app', ready: true, revision: 'flobi-artwork-render-00042-kiv', updatedAt: now - 2 * 24 * HOUR }]);
     const since = this.lastSeenAt && now - this.lastSeenAt > 10 * MIN ? this.lastSeenAt : now - 10.5 * HOUR;
     this.recap({ since, until: now }).then((r) => p.setRecap({ ...r, auto: true }));
+    // The past week, loaded like the live app does it (a bit faster).
+    this.later(1_000, () => this.loadPastWeek(now));
     // First incident shortly after start so the alert flow is visible.
     this.later(20_000, () => this.startBrandIncident());
+  }
+
+  // ── The past week (see backfill.mjs) ─────────────────────────────────────
+  /** Made-up Cloud Logging entries for the week before `now`, read and turned into page data by the live code. */
+  loadPastWeek(now) {
+    const p = this.pipeline;
+    const week = (this.pastWeek ||= this.makePastWeek(now));
+    const podToService = (pod) => pod.replace(/-[a-z0-9]{9}-[a-z0-9]{5}$/, '');
+    return loadPastWeek({
+      now,
+      read: async ({ kind, from, until, max }) => {
+        await new Promise((r) => setTimeout(r, 200));
+        return week[kind].filter((e) => e.t >= from && e.t < until).sort((a, b) => b.t - a.t).slice(0, max).map((e) => e.entry);
+      },
+      process: (raw) => processSlice({ ...raw, namespace: NS, projectId: 'flobi-prod-2026', podToService }),
+      pause: () => new Promise((r) => this.later(100, r)),
+      stopped: () => this.stopped,
+      onStatus: (state) => p.setBackfill(state),
+      onSlice: (slice) => p.addPast(slice),
+      onRecentLogs: ({ since, until, entries, capped }) => {
+        const lines = entries.map((e) => normalizeEntry(e, { namespace: NS, podToService })).filter((l) => l.kind === 'log');
+        p.setLogsBefore({ since, until, capped, lines: lines.sort((a, b) => a.ts - b.ts) });
+      },
+    });
+  }
+
+  makePastWeek(now) {
+    const week = { errors: [], events: [], failed: [], sql: [], logs: [] };
+    const add = (kind, t, entry) => week[kind].push({ t, entry });
+    const oldPods = new Map(); // service → pods since replaced by the ones running now
+    const podOf = (svc, t) => {
+      const current = this.pods.filter((x) => x.metadata.labels.app === svc && Date.parse(x.metadata.creationTimestamp) < t);
+      if (current.length) return pick(current).metadata.name;
+      if (!oldPods.has(svc)) oldPods.set(svc, [0, 1].map(() => `${svc}-${alnum(9)}-${alnum(5)}`));
+      return pick(oldPods.get(svc));
+    };
+    const container = (svc, t, text, severity = 'ERROR', pod = podOf(svc, t)) => ({ insertId: alnum(14), timestamp: iso(t), severity, resource: { type: 'k8s_container', labels: { namespace_name: NS, pod_name: pod, container_name: svc, cluster_name: 'flobi-cluster' } }, textPayload: text });
+    const error = (svc, t, msg, ctx = pick(CONTEXTS[svc] || CONTEXTS.default), pod) => add('errors', t, container(svc, t, nestLine('ERROR', ctx, msg, t), 'ERROR', pod));
+    const node = (i) => this.nodes[i % this.nodes.length].metadata.name;
+    // An Event object, exported again each time its count went up (as Kubernetes does).
+    const event = (type, reason, kind, name, message, times, { fieldPath, host = node(0), component = kind === 'Pod' ? 'kubelet' : kind === 'Node' ? 'kernel-monitor' : 'deployment-controller' } = {}) => {
+      const uid = `past-${alnum(10)}`;
+      times.forEach((t, i) => add('events', t, { logName: 'projects/flobi-prod-2026/logs/events', timestamp: iso(t), jsonPayload: { metadata: { uid, name: `${name}.${uid}` }, type, reason, message, involvedObject: { kind, name, namespace: kind === 'Node' ? undefined : NS, fieldPath }, count: i + 1, firstTimestamp: iso(times[0]), lastTimestamp: iso(t), source: { component, host } } }));
+    };
+    const failed = (svc, t, status, details) => add('failed', t, { insertId: alnum(12), timestamp: iso(t), resource: { type: 'http_load_balancer', labels: { backend_service_name: `k8s1-8f2c1a9b-flobi-${svc}-80-${alnum(8)}` } }, httpRequest: { requestMethod: pick(['GET', 'POST']), requestUrl: `https://api.flobi.ai${pick(['/brand/extract', '/brand/assets', '/drive/files'])}`, status, latency: `${between(0.01, 2).toFixed(3)}s` }, jsonPayload: { statusDetails: details }, severity: 'ERROR' });
+    const at = (daysAgo, hour, min = 0) => {
+      const d = new Date(now - daysAgo * DAY);
+      d.setHours(hour, min, Math.floor(rand() * 60), 0);
+      return Math.min(d.getTime(), now - 2 * MIN);
+    };
+    const spread = (from, ms, n) => Array.from({ length: n }, (_, i) => from + Math.round((i / Math.max(1, n - 1)) * ms));
+
+    // Everyday errors, more in the daytime.
+    for (let d = 0; d < 7; d++) {
+      for (const [svc, templates] of Object.entries(ERRORS)) {
+        const n = Math.round((svc === 'flobi-brand' ? 45 : svc === 'flobi-gateway' ? 18 : 9) * between(0.6, 1.4));
+        for (let i = 0; i < n; i++) {
+          const t = now - d * DAY - Math.floor(rand() * DAY);
+          if (t < now - 7 * DAY + MIN) continue;
+          error(svc, t, fill(pick(templates)));
+        }
+      }
+      // The odd unexpected exception: Nest's line, then the exception (frames aren't read).
+      for (const svc of Object.keys(EXCEPTIONS)) {
+        const t = now - d * DAY - Math.floor(rand() * DAY);
+        const pod = podOf(svc, t);
+        const [message, header] = EXCEPTIONS[svc];
+        add('errors', t, container(svc, t, nestLine('ERROR', 'ExceptionsHandler', message, t), 'ERROR', pod));
+        add('errors', t + 1, container(svc, t + 1, header, 'ERROR', pod));
+      }
+    }
+    // A busy day: the media worker failed every transcode for two hours (more errors than one read takes).
+    for (const t of spread(at(4, 14, 5), 2 * HOUR, 1400)) error('flobi-media-worker', t, `Transcode job ${alnum(10)} failed: ffmpeg exited with code 1`, 'RmqConsumer');
+    // An error spike in drive, and one error type nobody had seen before (2 days ago).
+    for (const t of spread(at(2, 11, 20), 9 * MIN, 320)) error('flobi-drive', t, `S3 upload failed for file_${alnum(10)}: ECONNRESET`, 'UploadService');
+    for (const t of spread(at(2, 11, 24), 40 * MIN, 14)) error('flobi-drive', t, 'Presigned URL expired before the upload finished (bucket flobi-uploads)', 'UploadService');
+    // Yesterday afternoon brand ran out of memory over and over; the gateway couldn't reach it.
+    const oom = at(1, 15, 2);
+    const brandPod = podOf('flobi-brand', oom);
+    event('Warning', 'OOMKilling', 'Node', node(1), 'Memory cgroup out of memory: Killed process 1 (node) total-vm:4101212kB, anon-rss:2097152kB, file-rss:0kB, shmem-rss:0kB', [oom - 40_000, oom + 3 * MIN, oom + 9 * MIN], { host: node(1) });
+    event('Warning', 'BackOff', 'Pod', brandPod, `Back-off restarting failed container flobi-brand in pod ${brandPod}_flobi(${alnum(8)})`, spread(oom, 22 * MIN, 11), { fieldPath: 'spec.containers{flobi-brand}', host: node(1) });
+    for (const t of spread(oom + 30_000, 4 * MIN, 180)) failed('flobi-gateway', t, 502, 'failed_to_connect_to_backend');
+    for (const t of spread(oom + MIN, 20 * MIN, 60)) error('flobi-gateway', t, 'Upstream flobi-brand responded 503 for POST /brand/extract', 'ProxyService');
+    // Three days ago notes failed its liveness probe and was restarted.
+    const notes = at(3, 9, 40);
+    const notesPod = podOf('flobi-notes', notes);
+    event('Warning', 'Unhealthy', 'Pod', notesPod, 'Liveness probe failed: Get "http://10.8.1.22:3000/health": context deadline exceeded', spread(notes - 90_000, 80_000, 3), { fieldPath: 'spec.containers{flobi-notes}', host: node(2) });
+    event('Normal', 'Killing', 'Pod', notesPod, 'Container flobi-notes failed liveness probe, will be restarted', [notes], { fieldPath: 'spec.containers{flobi-notes}', host: node(2) });
+    // Five days ago the media workers couldn't be scheduled for a while.
+    event('Warning', 'FailedScheduling', 'Pod', `flobi-media-worker-${alnum(9)}-${alnum(5)}`, '0/4 nodes are available: 4 Insufficient memory. preemption: 0/4 nodes are available: 4 No preemption victims found for incoming pod.', spread(at(5, 16, 10), 14 * MIN, 6), { component: 'default-scheduler' });
+    // face-detection's readiness probe times out a few times every day.
+    for (let d = 0; d < 7; d++) {
+      const pod = podOf('flobi-face-detection', now - d * DAY - 12 * HOUR);
+      event('Warning', 'Unhealthy', 'Pod', pod, 'Readiness probe failed: Get "http://10.8.2.14:8000/health": context deadline exceeded (Client.Timeout exceeded while awaiting headers)', spread(at(d, 10 + (d % 5), 15), 20 * MIN, 3 + (d % 4)), { fieldPath: 'spec.containers{flobi-face-detection}', host: node(d) });
+    }
+    // Deploys (a new replica set up, the old one down) and autoscaling.
+    for (const [svc, d, h] of [['flobi-notes', 1, 10], ['flobi-gateway', 2, 17], ['flobi-drive', 4, 12], ['flobi-brand', 6, 11]]) {
+      const t = at(d, h, 30);
+      event('Normal', 'ScalingReplicaSet', 'Deployment', svc, `Scaled up replica set ${svc}-${alnum(9)} to 2`, [t]);
+      event('Normal', 'ScalingReplicaSet', 'Deployment', svc, `Scaled down replica set ${svc}-${alnum(9)} to 0 from 2`, [t + 2 * MIN]);
+    }
+    for (let d = 0; d < 7; d++) {
+      event('Normal', 'SuccessfulRescale', 'HorizontalPodAutoscaler', 'flobi-nodes-hpa', 'New size: 4; reason: cpu resource utilization (percentage of request) above target', [at(d, 13, 0)], { component: 'horizontal-pod-autoscaler' });
+      event('Normal', 'SuccessfulRescale', 'HorizontalPodAutoscaler', 'flobi-nodes-hpa', 'New size: 2; reason: All metrics below target', [at(d, 18, 30)], { component: 'horizontal-pod-autoscaler' });
+    }
+    // Postgres: connection slots ran out one evening, and a couple of deadlocks.
+    const sql = (t, text) => add('sql', t, { insertId: alnum(12), timestamp: iso(t), severity: 'ERROR', resource: { type: 'cloudsql_database', labels: { database_id: 'flobi-prod-2026:flobi-prod-pg', region: 'europe-west1' } }, textPayload: text });
+    for (const t of spread(at(3, 20, 12), 6 * MIN, 24)) sql(t, 'FATAL:  remaining connection slots are reserved for non-replication superuser connections');
+    for (const t of [at(5, 9, 3), at(5, 9, 5)]) sql(t, 'ERROR:  deadlock detected');
+    // The Logs page's 15 minutes before the live stream (the live lines seeded at start cover the last 90 s).
+    for (const t of spread(now - 16.5 * MIN, 15 * MIN, 480)) {
+      const pod = pick(this.pods);
+      add('logs', t, { ...this.logEntry(pod, pod.metadata.labels.app, t), timestamp: iso(t), timestampMs: undefined });
+    }
+    return week;
   }
 
   stop() {
@@ -217,7 +365,8 @@ export class DemoConnector {
     this.k8sServices = [];
     const ingressPaths = {};
     for (const [name, replicas, mem, cpu, scale, routes] of DEMO_SERVICES) {
-      const rs = hex(9).slice(0, 9);
+      // Kubernetes names replica sets (and pods) from its own alphabet: no vowels, no 0, 1 or 3.
+      const rs = alnum(9);
       const container = { name, image: `europe-west1-docker.pkg.dev/flobi-prod-2026/flobi-repo/${name}:latest`, resources: { requests: { cpu: `${cpu}m`, memory: `${Math.round(mem / 4)}Mi` }, limits: { cpu: `${cpu * 3}m`, memory: `${mem}Mi` } } };
       const d = {
         metadata: { name, uid: `dep-${name}`, labels: { app: name }, generation: 7, creationTimestamp: new Date(now - 40 * 24 * HOUR).toISOString(), annotations: { revision: String(Math.floor(between(3, 40))) } },
@@ -390,6 +539,12 @@ export class DemoConnector {
         status = 502;
         details = 'backend_connection_closed_before_data_sent_to_client';
       }
+      // Now and then a client gives up before any answer (a closed tab, a cancelled
+      // download): the load balancer logs status 0, which isn't a server error.
+      if (status < 400 && rand() < 0.003) {
+        status = 0;
+        details = 'client_disconnected_before_any_response';
+      }
       const latency = Math.max(2, base * Math.exp(between(-0.6, 0.9)) * (status >= 500 ? 0.4 : 1));
       raw.push({
         insertId: alnum(12),
@@ -428,6 +583,7 @@ export class DemoConnector {
       const gw = pick(running.filter((x) => x.metadata.labels.app === 'flobi-gateway'));
       out.push(this.rawLog(gw, 'flobi-gateway', nestLine('ERROR', 'ProxyService', 'Upstream flobi-brand responded 503 for POST /brand/extract', now), now, 'ERROR'));
     }
+    if (rand() < 0.015) out.push(...this.exceptionEntries(pick(Object.keys(EXCEPTIONS)), now, running));
     const lines = out.map((e) => normalizeEntry(e, { namespace: NS, podToService: (pod) => pod.replace(/-[a-z0-9]{9}-[a-z0-9]{5}$/, '') }));
     this.recentLogs.push(...lines);
     if (this.recentLogs.length > 4000) this.recentLogs.splice(0, this.recentLogs.length - 4000);
@@ -467,6 +623,13 @@ export class DemoConnector {
     return { insertId: alnum(14), timestampMs: ts - Math.floor(rand() * 250), resource: { type: 'k8s_container', labels: { namespace_name: NS, pod_name: pod?.metadata.name || `${svc}-x`, container_name: svc, cluster_name: 'flobi-cluster' } }, textPayload: text, severity };
   }
 
+  /** One unexpected exception on one of the service's pods: a line per entry, a millisecond apart, all on stderr. */
+  exceptionEntries(svc, ts, pods = this.pods) {
+    const pod = pick(pods.filter((x) => x.metadata.labels.app === svc));
+    const [message, ...stack] = EXCEPTIONS[svc];
+    return [nestLine('ERROR', 'ExceptionsHandler', message, ts), ...stack].map((text, i) => ({ ...this.rawLog(pod, svc, text, ts, 'ERROR'), timestampMs: ts + i }));
+  }
+
   emitMetrics() {
     const podsM = this.pods.map((pod) => {
       const svc = pod.metadata.labels.app;
@@ -503,9 +666,7 @@ export class DemoConnector {
     const now = this.clock();
     for (const [name, url, group, base] of targets) {
       const ms = Math.round(base * between(0.7, 1.4));
-      const brandHurts = false;
-      const status = brandHurts ? 503 : 200;
-      this.pipeline.setUptime({ id: url, name, url, group }, { status, ms, certDaysLeft: group === 'frontend' ? 71 : 61, at: now, state: ms > 3000 ? 'slow' : 'up' });
+      this.pipeline.setUptime({ id: url, name, url, group }, { status: 200, ms, certDaysLeft: group === 'frontend' ? 71 : 61, at: now, state: ms > 3000 ? 'slow' : 'up' });
     }
   }
 
@@ -650,6 +811,10 @@ export class DemoConnector {
       const pod = pick(this.pods.filter((x) => x.metadata.labels.app === 'flobi-brand'));
       this.pipeline.ingest([normalizeEntry(this.rawLog(pod, 'flobi-brand', nestLine('ERROR', 'ExtractionService', fill(pick(ERRORS['flobi-brand'])), ts), ts, 'ERROR'), { namespace: NS, podToService: () => 'flobi-brand' })]);
     }
+    // A few exceptions with their stack traces, so Errors shows one on first paint.
+    for (const [svc, ago] of [['flobi-gateway', 47 * MIN], ['flobi-drive', 22 * MIN], ['flobi-gateway', 6 * MIN]]) {
+      this.pipeline.ingest(this.exceptionEntries(svc, now - ago).map((e) => normalizeEntry(e, { namespace: NS })));
+    }
   }
 
   // ── On-demand ────────────────────────────────────────────────────────────
@@ -685,14 +850,32 @@ export class DemoConnector {
     return lines.map((text, i) => k8sLogLine({ text, ts: now - (lines.length - i) * 1500, pod, container, service }));
   }
 
-  async queryLogs({ service, level, text, limit = 500 }) {
+  async queryLogs({ service, pod, level, text, from, until, limit = 500 }) {
     await new Promise((r) => setTimeout(r, 400));
-    let list = this.recentLogs;
+    // Before the app started (the logs around a crash from the past week): made-up lines for that time.
+    let list = until && until < (this.recentLogs[0]?.ts ?? Date.now()) ? this.pastLines({ service, pod, from: from ?? until - 10 * MIN, until }) : this.recentLogs;
+    if (pod) list = list.filter((l) => l.pod === pod);
     if (service) list = list.filter((l) => l.service === service);
     if (level === 'ERROR') list = list.filter((l) => l.level === 'ERROR');
     if (level === 'WARN') list = list.filter((l) => l.level === 'ERROR' || l.level === 'WARN');
     if (text) list = list.filter((l) => l.text.toLowerCase().includes(String(text).toLowerCase()));
     return list.slice(-limit);
+  }
+
+  /** Demo: a pod's lines in a range before the app started; brand's end in its out-of-memory crash. */
+  pastLines({ service, pod, from, until }) {
+    const svc = service || (pod ? pod.replace(/-[a-z0-9]{9}-[a-z0-9]{5}$/, '') : 'flobi-gateway');
+    const name = pod || this.pods.find((p) => p.metadata.labels.app === svc)?.metadata.name || `${svc}-x`;
+    const n = 36;
+    const lines = Array.from({ length: n }, (_, i) => {
+      const ts = Math.round(from + ((i + 1) / (n + 2)) * (until - from));
+      return { ...k8sLogLine({ text: this.textFor(svc, ts), ts, pod: name, container: svc, service: svc }), source: 'cloud' };
+    });
+    if (svc === 'flobi-brand') {
+      const texts = [nestLine('WARN', 'ExtractionService', 'Heap used 1.86 GB of 2.00 GB limit', until - 9000), 'FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory', ' 1: 0xb8a3c0 node::Abort() [node]'];
+      texts.forEach((text, i) => lines.push({ ...k8sLogLine({ text, ts: until - 9000 + i * 2000, pod: name, container: svc, service: svc }), source: 'cloud' }));
+    }
+    return lines;
   }
 
   /** Demo: the service's lines around a request, with the error behind a failed one. */
@@ -745,7 +928,7 @@ export class DemoConnector {
       { id: 'd4', kind: 'errors', severity: 'warning', service: 'flobi-drive', title: 'Error spike in drive', detail: `480 errors in ${fmtDuration(10 * MIN)} (usually ~8 per 5 min)`, start: at(0.7), end: at(0.7) + 10 * MIN, view: { to: 'logs', service: 'flobi-drive', level: 'ERROR' } },
       { id: 'd5', kind: 'frontend', severity: 'warning', service: 'flobi-flow', title: '2 new frontend errors in flobi-flow', detail: "TypeError: Cannot read properties of undefined (reading 'position') (214× · 38 users)\nRangeError: Maximum call stack size exceeded (12× · 4 users)", start: at(0.93), end: until, view: { to: 'errors', filter: { source: 'frontend' } } },
       { id: 'd6', kind: 'deploy', severity: 'warning', service: null, title: 'Cloudflare Pages deploy failed: flobi-sites', detail: 'main e19b4c2 Add site theme presets', start: at(0.95), end: at(0.95), view: { to: 'frontends' } },
-    ];
+    ].sort((a, b) => a.start - b.start); // in time order, like the real recap
     return {
       since,
       until,
@@ -775,4 +958,160 @@ function weighted(list, wIdx) {
     if (x <= 0) return r;
   }
   return list[0];
+}
+
+// ── The Costs page, simulated ────────────────────────────────────────────────
+// What the readers would find (see costs.mjs): Google Cloud per service from the billing
+// export (the Gemini API in it goes to Google AI Studio), Cloudflare plans and usage, GitHub
+// usage and seats, OpenRouter's days and credits, fal's months and balance, plus a few items
+// typed in Settings → Costs. Made up, shaped like a small platform's bill, the same on every run.
+const costSeed = (s) => {
+  let h = 2166136261;
+  for (const c of s) h = Math.imul(h ^ c.charCodeAt(0), 16777619);
+  return ((h >>> 0) % 10_000) / 10_000;
+};
+const cents = (n) => Math.round(n * 100) / 100;
+
+/** { data: { vendors, history }, settings, setup } for buildCosts(). */
+export function demoCosts(now = Date.now()) {
+  const months = lastMonths(now, 6);
+  const current = months.at(-1);
+  const d = new Date(now);
+  const start = new Date(d.getFullYear(), d.getMonth(), 1).getTime();
+  const end = new Date(d.getFullYear(), d.getMonth() + 1, 1).getTime();
+  // Google's billing data runs about a day behind; Cloudflare's usage is daily.
+  const through = Math.max(start, now - 20 * HOUR - (now % HOUR));
+  const today = Math.max(start, new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime());
+  const frac = (through - start) / (end - start);
+  const dayFrac = (today - start) / (end - start);
+  // Each month a little bigger than the one before, give or take a few percent.
+  const growth = (i) => 0.8 + i * 0.045;
+  const amount = (name, base, m, i, sofar) => cents(base * growth(i) * (1 + (costSeed(`${name}:${m}`) - 0.5) * 0.08) * sofar);
+  const monthEnd = (m) => new Date(+m.slice(0, 4), +m.slice(5, 7), 1).getTime();
+
+  const GCP = [
+    ['Compute Engine', 356.4, 0],
+    ['Cloud SQL', 118.2, 0],
+    ['Kubernetes Engine', 73, 0],
+    ['Networking', 46.1, 0],
+    ['Cloud Storage', 22.35, 0],
+    ['Artifact Registry', 4.2, 0],
+    ['Cloud Logging', 3.1, 0],
+    ['Cloud Run', 1.85, -0.72],
+    ['Cloud DNS', 0.8, 0],
+    ['Secret Manager', 0.36, -0.06],
+    ['Gemini API', 38.4, 0],
+  ];
+  const gcpMonths = {};
+  months.forEach((m, i) => {
+    const sofar = m === current ? frac : 1;
+    const lines = {};
+    for (const [name, base, credit] of GCP) lines[name] = [amount(name, base, m, i, sofar), cents(credit * sofar)];
+    gcpMonths[m] = { USD: { lines, through: m === current ? through : monthEnd(m) } };
+  });
+
+  const CF_USAGE = [
+    ['Workers Standard', 3.2],
+    ['R2 Storage', 0.9],
+  ];
+  const cfUsage = { status: 'ok', message: null, months: {}, read: {} };
+  months.forEach((m, i) => {
+    const sofar = m === current ? dayFrac : 1;
+    cfUsage.months[m] = { USD: { lines: Object.fromEntries(CF_USAGE.map(([n, b]) => [n, amount(n, b, m, i, sofar)])), through: m === current ? today : monthEnd(m) } };
+    cfUsage.read[m] = now - 2 * HOUR;
+  });
+  const renews = new Date(d.getFullYear(), d.getMonth() + 1, 3).getTime();
+  const plans = [
+    { id: 'demo-zone-pro', name: 'Pro', planId: 'pro', zone: 'flobi.ai', zoneId: '7f0c2e5a9b3d4c1e8f6a2b0c9d8e7f61', price: 25, currency: 'USD', frequency: 'monthly', state: 'Paid', charged: true, periodEnd: renews },
+    { id: 'demo-workers-paid', name: 'Workers Paid', planId: null, zone: null, zoneId: null, price: 5, currency: 'USD', frequency: 'monthly', state: 'Paid', charged: true, periodEnd: renews },
+  ];
+
+  const ghMonths = {};
+  const ghRead = {};
+  months.forEach((m, i) => {
+    const sofar = m === current ? frac : 1;
+    ghMonths[m] = { USD: { lines: { Actions: amount('Actions', 8.64, m, i, sofar), Copilot: cents(38 * sofar), Packages: amount('Packages', 0.42, m, i, sofar) } } };
+    ghRead[m] = now - 2 * HOUR;
+  });
+
+  // OpenRouter: the Activity API's days (UTC), up to yesterday, since the oldest month shown.
+  const OR_MODELS = [
+    ['anthropic/claude-sonnet-4.5', 2.35],
+    ['openai/gpt-5-mini', 0.62],
+    ['google/gemini-2.5-flash', 0.41],
+    ['deepseek/deepseek-chat-v3.1', 0.12],
+  ];
+  const todayUtc = new Date(now).toISOString().slice(0, 10);
+  const orDays = {};
+  let orUsed = 0;
+  for (let t = Date.parse(`${months[0]}-01T00:00:00Z`); ; t += 24 * HOUR) {
+    const day = new Date(t).toISOString().slice(0, 10);
+    if (day >= todayUtc) break;
+    const i = Math.max(0, months.indexOf(day.slice(0, 7)));
+    orDays[day] = Object.fromEntries(
+      OR_MODELS.map(([model, base]) => {
+        const usd = Math.round(base * growth(i) * (0.6 + costSeed(`${model}:${day}`) * 0.8) * 1e6) / 1e6;
+        orUsed += usd;
+        return [model, usd];
+      }),
+    );
+  }
+  const orSpentBefore = 214.8; // before the months shown
+  const orCredits = { total: cents(orSpentBefore + orUsed + 86.2), used: cents(orSpentBefore + orUsed) };
+
+  // fal: the Usage API per month and endpoint (up to the last read), and the balance.
+  const FAL = [
+    ['fal-ai/flux-pro/v1.1-ultra', 48.6],
+    ['fal-ai/kling-video/v2.1/pro/image-to-video', 31.5],
+    ['fal-ai/flux/dev', 12.8],
+    ['fal-ai/recraft-v3', 6.4],
+    ['fal-ai/birefnet/v2', 0.9],
+  ];
+  const falRead = now - 2 * HOUR;
+  const falFrac = (Math.max(start, falRead) - start) / (end - start);
+  const falMonths = {};
+  months.forEach((m, i) => {
+    const sofar = m === current ? falFrac : 1;
+    falMonths[m] = { USD: { lines: Object.fromEntries(FAL.map(([n, b]) => [n, amount(n, b, m, i, sofar)])) } };
+  });
+
+  const cfKey = 'cloudflare:0123456789abcdef0123456789abcdef:flobi.ai';
+  const ghKey = 'github:org:4ow4-developers';
+  const history = {};
+  months.slice(0, -1).forEach((m, i) => {
+    history[m] = { [cfKey]: { subs: plans }, [ghKey]: { seats: { plan: 'team', seats: [4, 5, 5, 6, 6][i], filled: [4, 5, 5, 6, 6][i] } } };
+  });
+
+  const checked = now - 2 * HOUR;
+  const vendors = {
+    gcp: { status: 'ok', message: null, key: 'bigquery:flobi-billing.billing_export.gcp_billing_export_v1_01A2B3_C4D5E6_F7A8B9', table: 'flobi-billing.billing_export.gcp_billing_export_v1_01A2B3_C4D5E6_F7A8B9', months: gcpMonths, complete: months, through, rows: 812_406, days: 186, storage: { bytes: 479_500_000, longTermBytes: 212_000_000, bytesPerDay: 2_600_000, expirationDays: null }, checkedAt: checked, okAt: checked },
+    cloudflare: { status: 'ok', message: null, key: cfKey, subscriptions: plans, zones: ['flobi.ai'], usage: cfUsage, checkedAt: checked, okAt: checked },
+    github: { status: 'ok', message: null, key: ghKey, owner: '4ow4-Developers', kind: 'org', months: ghMonths, read: ghRead, seats: { plan: 'team', seats: 6, filled: 6 }, seatsNote: null, checkedAt: checked, okAt: checked },
+    openrouter: { status: 'ok', message: null, key: 'openrouter', days: orDays, byok: {}, lastDay: new Date(Date.parse(`${todayUtc}T00:00:00Z`) - 24 * HOUR).toISOString().slice(0, 10), credits: orCredits, creditsNote: null, checkedAt: checked, okAt: checked },
+    fal: { status: 'ok', message: null, key: 'fal', months: falMonths, read: Object.fromEntries(months.map((m) => [m, falRead])), balance: { amount: 142.35, currency: 'USD' }, balanceNote: null, account: 'flobi', checkedAt: checked, okAt: checked },
+  };
+
+  const since = new Date(d.getFullYear(), d.getMonth() - 5, 2).getTime();
+  const settings = {
+    ...DEFAULT_COSTS,
+    bigQueryTable: vendors.gcp.table,
+    github: { owner: '4ow4-Developers', kind: 'org', seatPrice: 4, seatCurrency: 'USD' },
+    items: [
+      { id: 'demo-sentry', vendor: 'Sentry', item: 'Team plan', amount: 26, currency: 'USD', cycle: 'monthly', date: '', note: 'Billed on the 14th', addedAt: since },
+      { id: 'demo-clerk', vendor: 'Clerk', item: 'Pro plan', amount: 25, currency: 'USD', cycle: 'monthly', date: '', note: '', addedAt: since },
+      { id: 'demo-domain', vendor: 'Cloudflare', item: 'flobi.ai domain', amount: 80, currency: 'USD', cycle: 'yearly', date: `${d.getFullYear() + 1}-03-14`, note: 'Cloudflare Registrar', addedAt: since },
+      { id: 'demo-replicate', vendor: 'Replicate', item: 'Monthly usage', amount: 35, currency: 'USD', cycle: 'monthly', date: '', note: 'From the last invoices', addedAt: since },
+      { id: 'demo-backups', vendor: 'Hetzner', item: 'Storage Box (backups)', amount: 12.97, currency: 'EUR', cycle: 'monthly', date: '', note: '', addedAt: since },
+    ],
+    rates: { EUR: 1.08 },
+  };
+  const setup = {
+    email: 'flobi-pulse-viewer@flobi-prod-2026.iam.gserviceaccount.com',
+    gcp: { table: vendors.gcp.table },
+    cloudflare: { hasToken: true, accountId: '0123456789abcdef0123456789abcdef', zones: ['flobi.ai'] },
+    github: { hasToken: true, owner: '4ow4-Developers', kind: 'org' },
+    openrouter: { hasKey: true },
+    fal: { hasKey: true },
+  };
+  return { data: { vendors, history }, settings, setup };
 }

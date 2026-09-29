@@ -2,20 +2,38 @@
 // (encrypted with the OS keychain through Electron's safeStorage).
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { DEFAULT_COSTS } from './engine/costs.mjs';
 
 async function readJson(file, fallback) {
+  let text;
   try {
-    return JSON.parse(await fs.readFile(file, 'utf8'));
+    text = await fs.readFile(file, 'utf8');
   } catch {
-    return fallback;
+    return fallback; // not saved yet
   }
+  try {
+    const data = JSON.parse(text);
+    // Anything but a JSON object (a file cut short, edited by hand) counts as missing.
+    if (isPlainObject(data)) return data;
+  } catch {}
+  console.warn(`[store] ${path.basename(file)} is unreadable, using the defaults`);
+  return fallback;
 }
 
-async function writeJsonAtomic(file, data, mode) {
+let tmpSeq = 0;
+
+/** Writes to a temp file next to `file`, then renames it over `file`, so a crash mid-write never leaves half a file. */
+export async function writeJsonAtomic(file, data, mode) {
   await fs.mkdir(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.tmp`;
-  await fs.writeFile(tmp, typeof data === 'string' || Buffer.isBuffer(data) ? data : JSON.stringify(data, null, 2), mode ? { mode } : undefined);
-  await fs.rename(tmp, file);
+  // One temp file per write: two writes in flight never share (or clean up) the same one.
+  const tmp = `${file}.${process.pid}.${++tmpSeq}.tmp`;
+  try {
+    await fs.writeFile(tmp, typeof data === 'string' || Buffer.isBuffer(data) ? data : JSON.stringify(data, null, 2), mode ? { mode } : undefined);
+    await fs.rename(tmp, file);
+  } catch (e) {
+    await fs.rm(tmp, { force: true }).catch(() => {});
+    throw e;
+  }
 }
 
 function isPlainObject(v) {
@@ -27,6 +45,16 @@ export function deepMerge(base, patch) {
   const out = { ...base };
   for (const [k, v] of Object.entries(patch)) {
     out[k] = isPlainObject(v) && isPlainObject(base[k]) ? deepMerge(base[k], v) : v;
+  }
+  return out;
+}
+
+/** Top-level keys of `patch` replace those of `base`; a key set to undefined is removed. */
+export function shallowMerge(base, patch) {
+  const out = { ...base };
+  for (const [k, v] of Object.entries(patch || {})) {
+    if (v === undefined) delete out[k];
+    else out[k] = v;
   }
   return out;
 }
@@ -58,24 +86,35 @@ export const DEFAULT_SETTINGS = {
     uptime: null,
     cloudsql: null,
   },
+  // Settings → Costs: the billing-export table, GitHub billing account, items, rates.
+  costs: structuredClone(DEFAULT_COSTS),
 };
 
 export class JsonStore {
-  constructor(file, defaults = {}) {
+  /**
+   * @param {string} file
+   * @param {object} [defaults]
+   * @param {{shallow?: boolean}} [o] `shallow`: update() replaces whole top-level keys
+   *   (undefined removes one) instead of deep-merging into them. For state that is
+   *   always saved whole (known errors, restart counts): merged, it could only grow.
+   */
+  constructor(file, defaults = {}, { shallow = false } = {}) {
     this.file = file;
     this.defaults = defaults;
+    this.shallow = shallow;
     this.data = structuredClone(defaults);
     this._writing = Promise.resolve();
   }
   async load() {
-    this.data = deepMerge(structuredClone(this.defaults), await readJson(this.file, {}));
+    const saved = await readJson(this.file, {});
+    this.data = this.shallow ? { ...structuredClone(this.defaults), ...saved } : deepMerge(structuredClone(this.defaults), saved);
     return this.data;
   }
   get() {
     return this.data;
   }
   async update(patch) {
-    this.data = deepMerge(this.data, patch);
+    this.data = this.shallow ? shallowMerge(this.data, patch) : deepMerge(this.data, patch);
     await this.flush();
     return this.data;
   }
@@ -99,6 +138,7 @@ export class SecureStore {
     this.file = path.join(dir, 'secrets.bin');
     this.safe = safeStorage;
     this.data = {};
+    this._writing = Promise.resolve();
   }
   get encrypted() {
     return !!this.safe?.isEncryptionAvailable?.();
@@ -131,7 +171,11 @@ export class SecureStore {
   async flush() {
     const text = JSON.stringify(this.data);
     const payload = this.encrypted ? this.safe.encryptString(text) : Buffer.from(`PLAIN:${Buffer.from(text).toString('base64')}`);
-    await writeJsonAtomic(this.file, payload, 0o600);
+    // One write at a time, in order, so an older snapshot never lands last. A failed
+    // write still fails for its caller, but doesn't block the next one.
+    const write = this._writing.catch(() => {}).then(() => writeJsonAtomic(this.file, payload, 0o600));
+    this._writing = write;
+    return write;
   }
 }
 

@@ -13,8 +13,13 @@ on:
   push:
     tags: ['v*.*.*']
 
+# Read-only by default. The build jobs run third-party code (npm ci, the tests,
+# electron-builder), so they never hold a token that can write to the repo; only
+# the publish job, which runs nothing from npm, may create the release.
+# Actions are pinned to full commit SHAs (the tag they came from is in the comment),
+# so a moved or hijacked tag can't swap in different code.
 permissions:
-  contents: write # create the release and upload its files
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -22,6 +27,8 @@ concurrency:
 jobs:
   build:
     name: Build (${{ matrix.name }})
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -34,9 +41,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false # don't leave the token in .git/config for the steps below
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 22
           cache: npm
@@ -60,7 +69,7 @@ jobs:
 
       - run: node scripts/package-downloader.mjs ${{ matrix.target }}
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ matrix.target }}
           path: upload/
@@ -71,8 +80,10 @@ jobs:
     name: Publish the release
     needs: build
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write # create the release and upload its files
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: upload
           merge-multiple: true

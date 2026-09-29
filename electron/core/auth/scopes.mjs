@@ -10,6 +10,11 @@ export const READ_SCOPES = [
   'https://www.googleapis.com/auth/run.readonly',
 ];
 
+// The Costs page: reading the billing-export table in BigQuery. Read-only, and the
+// guard lets only the free table preview (tabledata.list) and its metadata through,
+// never a query or a job, so it can't run up a bill either.
+export const BILLING_SCOPES = ['https://www.googleapis.com/auth/bigquery.readonly'];
+
 // For the APIs that have no read-only scope:
 //   • the Kubernetes API of the cluster. GKE turns away tokens that only carry
 //     narrow scopes (HTTP 401), so it gets the same scopes kubectl/gcloud use.

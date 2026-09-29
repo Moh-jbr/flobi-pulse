@@ -15,25 +15,34 @@ const text = (v) => (v instanceof Date ? stamp(v) : String(v));
 
 // ── Markdown ────────────────────────────────────────────────────────────────
 export function toMarkdown(columns, rows) {
-  const esc = (v) => text(v).replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/\r?\n/g, '<br>');
+  // A line break of any kind (\r\n, \n or a lone \r) would end the table row.
+  const esc = (v) => text(v).replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/\r\n|\r|\n/g, '<br>');
   const line = (cells) => `| ${cells.join(' | ')} |`;
   return [line(columns.map((c) => esc(c.label))), line(columns.map((c) => (rows.some((r) => typeof cellValue(c, r) === 'number') ? '---:' : '---'))), ...rows.map((r) => line(columns.map((c) => esc(cellValue(c, r)))))].join('\n');
 }
 
 // ── CSV (RFC 4180) ──────────────────────────────────────────────────────────
+// Paths, user agents and log lines come from outside. A text cell that starts like a formula
+// (= + - @, or a tab or carriage return) would run as one when the file is opened in a
+// spreadsheet, so it gets a leading ' (which makes it plain text). Numbers stay numbers.
+const FORMULA = /^[=+\-@\t\r]/;
+
 export function toCsv(columns, rows) {
   const esc = (v) => {
-    const s = text(v);
+    let s = text(v);
+    if (typeof v === 'string' && FORMULA.test(s)) s = `'${s}`;
     return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   return [columns.map((c) => esc(c.label)).join(','), ...rows.map((r) => columns.map((c) => esc(cellValue(c, r))).join(','))].join('\r\n');
 }
 
 // ── Excel (.xlsx) ───────────────────────────────────────────────────────────
+// Text goes in as inline strings, which Excel never evaluates, so no formula guard is needed here.
 const xml = (s) =>
   String(s)
-    // characters XML 1.0 doesn't allow at all (log lines can contain them)
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F￾￿]/g, '')
+    // Characters XML 1.0 doesn't allow at all (log lines can contain them): C0 controls other
+    // than tab, LF and CR, U+FFFE/U+FFFF, and unpaired surrogate halves.
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F￾￿]|\p{Cs}/gu, '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
@@ -94,7 +103,15 @@ const STYLES =
   '</styleSheet>';
 
 export function toXlsx(columns, rows, sheetName = 'Sheet1') {
-  const name = xml(String(sheetName).replace(/[[\]:*?/\\]/g, ' ').slice(0, 31) || 'Sheet1');
+  // Excel's rules for sheet names: no []:*?/\, at most 31 characters, not empty, no ' at either end.
+  const name =
+    xml(
+      String(sheetName)
+        .replace(/[[\]:*?/\\]/g, ' ')
+        .slice(0, 31),
+    )
+      .replace(/^'+|'+$/g, '')
+      .trim() || 'Sheet1';
   const files = [
     ['[Content_Types].xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>'],
     ['_rels/.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'],

@@ -79,12 +79,24 @@ export class GrpcError extends Error {
  * Opens a client→server + server→client stream, sends one request message and
  * keeps the stream open. onMessage receives each decoded (decompressed) message
  * payload. onEnd is called exactly once with a GrpcError (code OK on clean end).
+ *
+ * The read-only guard checks the (protobuf) request bytes themselves, exactly as sent.
+ *
+ * A quiet stream looks the same as a dead one, so the connection is checked: an
+ * HTTP/2 ping every pingIntervalMs must be answered within pingTimeoutMs, the server
+ * must be reachable (answer headers or a first ping) within responseTimeoutMs, and TCP
+ * keepalive is on. Otherwise the stream ends with UNAVAILABLE / DEADLINE_EXCEEDED and
+ * the caller reconnects. (Headers alone can't be the test: a gRPC server may hold them
+ * back until its first message, and a tail can be quiet for minutes.)
  */
-export function openStream({ origin, path, headers = {}, request, onMessage, onOpen, onEnd, pingIntervalMs = 30_000, connectOptions }) {
-  checkRequest({ method: 'POST', url: origin + path, headers });
+export function openStream({ origin, path, headers = {}, request, onMessage, onOpen, onEnd, pingIntervalMs = 30_000, pingTimeoutMs = 10_000, responseTimeoutMs = 20_000, connectOptions }) {
+  checkRequest({ method: 'POST', url: origin + path, headers, body: request });
 
+  const host = new URL(origin).host;
   let ended = false;
   let pingTimer = null;
+  let pingDeadline = null;
+  let responseTimer = null;
   let encoding = 'identity';
   const parser = new FrameParser();
 
@@ -93,12 +105,27 @@ export function openStream({ origin, path, headers = {}, request, onMessage, onO
     if (ended) return;
     ended = true;
     clearInterval(pingTimer);
+    clearTimeout(pingDeadline);
+    clearTimeout(responseTimer);
     try {
       session.destroy();
     } catch {}
     onEnd?.(err);
   };
 
+  // After a Wi-Fi or VPN switch the old socket can look open for a quarter of an
+  // hour; keepalive lets the OS notice a peer that's gone.
+  session.on('connect', (_session, socket) => {
+    try {
+      socket.setKeepAlive(true, 30_000);
+    } catch {}
+    // Connected: a first ping answered proves the server is there, headers or not.
+    try {
+      session.ping((err) => {
+        if (!err) clearTimeout(responseTimer);
+      });
+    } catch {}
+  });
   session.on('error', (e) => finish(new GrpcError(GRPC_CODE.UNAVAILABLE, e.message)));
   session.on('goaway', () => {
     /* server will close the stream; 'close' handles it */
@@ -117,7 +144,12 @@ export function openStream({ origin, path, headers = {}, request, onMessage, onO
     { endStream: false },
   );
 
+  // Connecting, TLS and a first sign of life must not hang forever either.
+  responseTimer = setTimeout(() => finish(new GrpcError(GRPC_CODE.DEADLINE_EXCEEDED, `No answer from ${host} within ${responseTimeoutMs / 1000} s`)), responseTimeoutMs);
+  responseTimer.unref?.();
+
   stream.on('response', (h) => {
+    clearTimeout(responseTimer);
     const status = Number(h[':status']);
     if (h['grpc-encoding']) encoding = String(h['grpc-encoding']);
     if (h['grpc-status'] !== undefined) {
@@ -170,10 +202,23 @@ export function openStream({ origin, path, headers = {}, request, onMessage, onO
 
   stream.write(frameMessage(request));
 
+  // A tail can be silent for minutes, so silence proves nothing: a ping that isn't
+  // answered in time means the connection is dead. (A ping sent while still
+  // connecting is cancelled by node, so those rounds are skipped.)
+  const lost = (why) => finish(new GrpcError(GRPC_CODE.UNAVAILABLE, `Lost the connection to ${host} (${why})`));
   pingTimer = setInterval(() => {
+    if (ended || pingDeadline || session.connecting) return;
+    pingDeadline = setTimeout(() => lost(`no answer to a ping for ${pingTimeoutMs / 1000} s`), pingTimeoutMs);
+    pingDeadline.unref?.();
     try {
-      session.ping(() => {});
-    } catch {}
+      session.ping((err) => {
+        clearTimeout(pingDeadline);
+        pingDeadline = null;
+        if (err) lost(err.message);
+      });
+    } catch (e) {
+      lost(e.message);
+    }
   }, pingIntervalMs);
   pingTimer.unref?.();
 

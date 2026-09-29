@@ -1,7 +1,7 @@
 // Flobi Pulse – Electron main process.
 // Owns the window, tray, notifications, sign-in and the data connectors.
 // All network access happens here, through the read-only guard.
-import { app, BrowserWindow, Menu, Tray, Notification, nativeImage, nativeTheme, ipcMain, shell, dialog, safeStorage, clipboard, powerMonitor, screen, session } from 'electron';
+import { app, BrowserWindow, Menu, Tray, Notification, nativeImage, nativeTheme, ipcMain, shell, dialog, safeStorage, clipboard, powerMonitor, screen, session, net } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
@@ -16,9 +16,12 @@ import { parseConnectionName } from './core/sources/cloudsql.mjs';
 import { CloudflareClient } from './core/sources/cloudflare.mjs';
 import { deniedAttempts, resetGuard, configureGuard } from './core/net/guard.mjs';
 import { destroyAgents } from './core/net/http.mjs';
+import { Connectivity } from './core/net/connectivity.mjs';
 import { Updater } from './updater.mjs';
 import { GitHubClient } from './core/sources/github.mjs';
 import { VersionsWatcher } from './core/engine/versions.mjs';
+import { CostsService } from './core/costs.mjs';
+import { cleanCostsSettings, cleanApiKey, lowCredits } from './core/engine/costs.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isMac = process.platform === 'darwin';
@@ -26,6 +29,15 @@ const isWin = process.platform === 'win32';
 const DEV_URL = process.env.PULSE_DEV_URL || null;
 const START_IN_DEMO = process.argv.includes('--demo');
 const MIN = 60_000;
+// The old known-error map is still read for this long after the first save of the new one.
+const LEGACY_KNOWN_ERRORS_MS = 30 * 24 * 60 * MIN;
+// After Silence, nothing new rings for this long (what was silenced stays quiet until it's fixed).
+const SILENCE_QUIET_MS = 5 * MIN;
+
+// A stray error in a background task shouldn't bring up Electron's crash dialog
+// or stop the monitoring: log it and carry on.
+process.on('uncaughtException', (e) => console.error('[main] uncaught exception:', e));
+process.on('unhandledRejection', (e) => console.error('[main] unhandled rejection:', e));
 
 // Every platform gets a normal solid window. A see-through one (macOS vibrancy,
 // Windows Mica) let the desktop show around and through the sidebar and panels,
@@ -56,6 +68,21 @@ const follows = new Map();
 let followSeq = 0;
 let updater = null;
 let versions = null; // VersionsWatcher, when a GitHub token is set
+let costs = null; // CostsService: the Costs page (its own 6-hour timer)
+// What the past-week load read (core/engine/backfill.mjs), kept across restarts (waking up,
+// a settings change) so a restart only reads the gap. Memory only; emptied on sign-out.
+let pastWeekCache = {};
+// What Silence and Mute set up in demo mode (AlertBook.stateToSave), for the next demo
+// session. Memory only: demo mode never saves anything.
+let demoAlertState = null;
+// The Costs page's billing export vs BigQuery's free storage (engine/costs.mjs), kept for the next pipeline.
+let billingStorage = null;
+// Prepaid balances (OpenRouter, fal) below the amount set to alert at, kept for the next pipeline.
+let billingCredits = [];
+// Is this computer online (core/net/connectivity.mjs)? Asked before anything is called down.
+let connectivity = null;
+/** Something failed at `since`: resolves true when it's because this computer is offline. */
+const isOffline = (o) => (connectivity ? connectivity.offline(o) : Promise.resolve(false));
 
 // ── Utilities ────────────────────────────────────────────────────────────────
 function send(message) {
@@ -72,14 +99,35 @@ function canPlaySound() {
   return !!(win && !win.isDestroyed() && !win.webContents.isCrashed());
 }
 
-function openCritical(id) {
+/** A critical alert that's still open, unacknowledged and unmuted (it may be recovering). */
+function liveCritical(id) {
   const a = pipeline && [...pipeline.alerts.active.values()].find((x) => x.id === id);
   return a && a.severity === 'critical' && !a.acked && !pipeline.alerts.isMuted(a) ? a : null;
 }
 
+/** …and its problem is there right now. One whose problem went away stays open a little
+ *  longer ("Recovering"): the siren keeps it but stays quiet unless the problem returns.
+ *  Offline, nothing can be seen: the siren pauses the same way until the connection is back. */
+function openCritical(id) {
+  if (mode === 'live' && connectivity?.online === false) return null;
+  const a = liveCritical(id);
+  return a && !a.clearingSince ? a : null;
+}
+
+/**
+ * The alerts a critical notification rings for: the startup summary covers every
+ * open alert, any other notification its own alert plus the related ones grouped
+ * into it. Only those still critical, unacknowledged, unmuted and not recovering.
+ */
+function sirenIds(alert, meta) {
+  const list = alert.summary ? [...(pipeline?.alerts.active.values() || [])] : [alert, ...(Array.isArray(meta.related) ? meta.related : [])];
+  return [...new Set(list.map((a) => a?.id))].filter((id) => id && openCritical(id));
+}
+
 const alarm = new Alarm({
   play: (kind) => send({ t: 'sound', kind, volume: settingsStore?.get().notifications.volume ?? 0.8 }),
-  stillRinging: (id) => !!openCritical(id),
+  stillRinging: (id) => !!liveCritical(id),
+  sounding: (id) => !!openCritical(id),
   repeat: () => settingsStore?.get().notifications.alarmRepeat !== false,
   onChange: () => {
     sendAlarm();
@@ -87,21 +135,35 @@ const alarm = new Alarm({
   },
 });
 
+/** What the red banner shows: nothing while every alert it rings for is recovering. */
 function alarmState() {
   const st = alarm.state();
-  return { ...st, titles: st.ids.map((id) => openCritical(id)?.title).filter(Boolean) };
+  return { ...st, ringing: st.ringing && st.audible, titles: st.ids.map((id) => openCritical(id)?.title).filter(Boolean) };
 }
 
+let lastAlarmSent = '';
 function sendAlarm() {
-  send({ t: 'alarm', alarm: alarmState() });
+  const a = alarmState();
+  // Called on every alerts update too (an alert starting or stopping to recover changes
+  // the banner without changing the siren's list), so only send real changes.
+  const key = JSON.stringify([a.ringing, a.ids, a.titles]);
+  if (key === lastAlarmSent) return;
+  lastAlarmSent = key;
+  send({ t: 'alarm', alarm: a });
 }
 
-/** Stops the siren and marks the alerts it was ringing for as acknowledged. */
-function silenceAlarm() {
-  const ids = alarm.silence();
-  for (const id of ids) pipeline?.alerts.ack(id);
+/**
+ * Silence (the red banner, the tray menu, clicking a critical notification): stops the siren,
+ * and what it was ringing for, plus `also` (a clicked notification's own alerts), stays quiet
+ * until it's fixed (AlertBook.silence). For 5 minutes nothing new rings either (Alarm.silence).
+ */
+function silenceAlarm(also = []) {
+  const ids = [...new Set([...alarm.state().ids, ...also])];
+  const n = pipeline?.alerts.silence(ids) ?? 0;
+  alarm.silence({ quietMs: n ? SILENCE_QUIET_MS : 0 });
   send({ t: 'sound-stop' });
-  return ids.length;
+  if (n) send({ t: 'silenced', count: n, quietMs: SILENCE_QUIET_MS });
+  return n;
 }
 
 /** "owner/repo" of the app's GitHub releases, from package.json → repository. */
@@ -162,6 +224,7 @@ function startVersions() {
       onSave: (saved) => stateStore.update({ versionsSaved: saved }),
       onChange: () => send({ t: 'versions', versions: versionsState() }),
       onNew: notifyReleases,
+      isOffline,
     });
     versions.start();
   }
@@ -191,6 +254,12 @@ function notifyReleases(all) {
   n.show();
 }
 
+// ── Costs page: billing from BigQuery's export, Cloudflare, GitHub, OpenRouter, fal and Settings ──
+/** Hands the session, keys and Settings → Costs to the Costs page; cheap when nothing changed. */
+function syncCosts() {
+  costs?.update({ mode, auth, config: config(), settings: settingsStore.get().costs, githubToken: secrets.get('githubToken'), openrouterKey: secrets.get('openrouterKey'), falKey: secrets.get('falKey') });
+}
+
 /** Who the database key is, for the UI (never the key itself). */
 function databaseKeyInfo() {
   const id = databaseAuth()?.identity;
@@ -216,10 +285,14 @@ function publicInfo() {
       cloudsql: { instances: settingsStore.get().overrides?.cloudsql?.instances || [], fromTeam: team.cloudsql?.instances || [] },
       databaseKey: databaseKeyInfo(),
       github: { hasToken: !!secrets.get('githubToken'), owner: c.versions?.owner || null },
+      // The Costs page's keys (never the keys themselves).
+      openrouter: { hasKey: !!secrets.get('openrouterKey') },
+      fal: { hasKey: !!secrets.get('falKey') },
     },
     uptime: c.uptime,
     update: updater?.state || null,
     versions: versionsState(),
+    costs: costs?.state() ?? null,
     settings: settingsStore.get(),
     secretsEncrypted: secrets.encrypted,
   };
@@ -254,6 +327,17 @@ function createWindow() {
       additionalArguments: [`--pulse-platform=${process.platform}`, `--pulse-version=${app.getVersion()}`],
     },
   });
+  // Run from source (npm run dev), the process is electron.exe, so Windows calls the taskbar
+  // button "Electron" with Electron's icon (right-click menu, pinning). The installed app gets
+  // its name and icon from its Start menu shortcut; this gives the dev window the same.
+  if (isWin && !app.isPackaged) {
+    win.setAppDetails({
+      appId: 'ai.flobi.pulse',
+      appIconPath: path.join(__dirname, 'assets', 'icon.ico'),
+      relaunchCommand: `"${process.execPath}" "${app.getAppPath()}"`,
+      relaunchDisplayName: 'Flobi Pulse',
+    });
+  }
   // Like Discord: look for a new version when the window comes back to the front.
   win.on('focus', () => updater?.checkIfStale());
 
@@ -357,10 +441,10 @@ function updateTray() {
   const state = !h || mode === 'signed-out' ? 'off' : h.overall === 'outage' ? 'crit' : h.overall === 'degraded' ? 'warn' : h.overall === 'operational' ? 'ok' : 'off';
   tray.setImage(trayImage(state));
   tray.setToolTip(`Flobi Pulse — ${h?.headline || 'Not connected'}`);
-  const top = (alerts?.active || []).slice(0, 6);
+  const top = (alerts?.active || []).filter((a) => !a.clearingSince).slice(0, 6);
   tray.setContextMenu(
     Menu.buildFromTemplate([
-      ...(alarm.ringing ? [{ label: 'Silence the alarm', click: silenceAlarm }, { type: 'separator' }] : []),
+      ...(alarm.audible ? [{ label: 'Silence the alarm', click: () => silenceAlarm() }, { type: 'separator' }] : []),
       { label: h?.headline || (mode === 'signed-out' ? 'Signed out' : 'Connecting…'), enabled: false },
       ...(top.length
         ? [
@@ -380,17 +464,16 @@ function updateTray() {
 // ── Notifications ────────────────────────────────────────────────────────────
 function notify(alert, meta = {}) {
   const s = settingsStore.get().notifications;
-  if (meta.muted || alert.acked) return;
+  // Muted, or part of a problem someone silenced: it shows in the app, that's all.
+  if (meta.muted || meta.silenced || alert.acked) return;
   if (alert.severity === 'critical' && !s.critical) return;
   if (alert.severity === 'warning' && !s.warning) return;
   if (alert.severity === 'info' && !s.info) return;
   // Our own sounds: a chime for warnings, the repeating siren for critical.
   const ownSound = s.sound && canPlaySound();
   if (ownSound) {
-    if (alert.severity === 'critical') {
-      const ids = alert.summary ? [...(pipeline?.alerts.active.values() || [])].filter((a) => openCritical(a.id)).map((a) => a.id) : [alert.id];
-      alarm.ring(ids.length ? ids : [alert.id]);
-    } else if (alert.severity === 'warning') alarm.chime();
+    if (alert.severity === 'critical') alarm.ring(sirenIds(alert, meta));
+    else if (alert.severity === 'warning') alarm.chime();
   }
   if (win && win.isFocused() && windowVisible()) {
     send({ t: 'toast', alert });
@@ -407,7 +490,8 @@ function notify(alert, meta = {}) {
     urgency: alert.severity === 'critical' ? 'critical' : 'normal',
   });
   n.on('click', () => {
-    if (alert.severity === 'critical') silenceAlarm();
+    // Clicking a critical notification is Silence, for what it rang for too (also when the siren is off).
+    if (alert.severity === 'critical') silenceAlarm([alert, ...(Array.isArray(meta.related) ? meta.related : [])].map((a) => a?.id).filter((id) => id && liveCritical(id)));
     showWindow();
     send({ t: 'nav', to: alert.view || { to: 'alerts' } });
   });
@@ -415,19 +499,25 @@ function notify(alert, meta = {}) {
 }
 
 // ── Sessions ─────────────────────────────────────────────────────────────────
-function newPipeline(kind) {
+// Demo mode gets empty known-error maps (its made-up errors must neither mix with
+// this machine's real ones nor all look new against them) and never saves anything.
+function newPipeline(kind, { knownErrors = {}, legacyKnownErrors } = {}) {
   pipeline?.destroy();
   pipeline = new Pipeline({
     namespace: config().namespace,
     mode: kind,
-    knownErrors: stateStore.get().knownErrors || {},
+    knownErrors,
+    legacyKnownErrors,
     graceMs: kind === 'demo' ? 8_000 : 45_000,
     notify,
+    // A data source just failed: is it this computer that went offline? (Demo data can't fail.)
+    onTrouble: () => kind === 'live' && connectivity?.check({ since: Date.now() }).catch(() => {}),
     emit: (type, payload) => {
       if (type === 'state') {
         send({ t: 'state', sections: payload });
         if (payload.alerts) {
           alarm.check();
+          sendAlarm(); // an alert that started or stopped recovering shows or hides the banner
           if (kind === 'live') saveAlertHistorySoon();
         }
         if (payload.health || payload.alerts) {
@@ -442,33 +532,77 @@ function newPipeline(kind) {
       }
     },
   });
-  // The Recent page: alerts from earlier runs (last 7 days).
-  if (kind === 'live') pipeline.alerts.loadHistory(stateStore.get().alertHistory || []);
+  // The Recent page: alerts from earlier runs (last 7 days). What was silenced or muted carries
+  // over, so a reconnect or waking up doesn't ring again for it (demo mode: in memory only).
+  if (kind === 'live') {
+    pipeline.alerts.loadHistory(stateStore.get().alertHistory || []);
+    pipeline.alerts.loadState(stateStore.get().alertSilence);
+  } else pipeline.alerts.loadState(demoAlertState);
+  pipeline.setBillingStorage(billingStorage);
+  pipeline.setBillingCredits(billingCredits);
+  if (kind === 'live' && connectivity) pipeline.setConnectivity(connectivity.state);
   return pipeline;
 }
 
 let historyTimer = null;
+/** Alert history, and what's silenced or muted (`alertSilence`), a moment after the alerts change. */
 function saveAlertHistorySoon() {
   clearTimeout(historyTimer);
   historyTimer = setTimeout(() => {
-    if (pipeline && mode === 'live') stateStore.update({ alertHistory: pipeline.alerts.historyToSave() });
+    if (pipeline && mode === 'live') stateStore.update({ alertHistory: pipeline.historyToSave(), alertSilence: pipeline.alerts.stateToSave() });
   }, 5_000);
 }
 
 /**
- * What gets saved together with lastSeenAt: known error types, plus each pod's
- * restart count so the next recap can tell exactly what restarted in between.
+ * Error types this machine has seen are saved as `knownErrorsV2`: their fingerprints
+ * changed, so the map saved by older versions (`knownErrors`) is left untouched
+ * (a downgraded app still finds it) and only read, for 30 days after the first save
+ * of the new map, so errors known before the switch don't all look new. Then it's
+ * dropped. The state store replaces whole keys, so the saved map can also shrink.
  */
-function awayState() {
-  if (!pipeline || mode !== 'live') return {};
-  const out = { knownErrors: pipeline.knownErrors() };
-  const snap = pipeline.restartSnapshot();
-  if (snap) out.restartSnapshot = snap;
+function knownErrorsToSave(p) {
+  const st = stateStore.get();
+  const now = Date.now();
+  const since = st.knownErrorsV2Since || now;
+  const map = p.knownErrors();
+  const out = map && typeof map === 'object' ? { knownErrorsV2: { ...map }, knownErrorsV2Since: since } : {};
+  if ('knownErrors' in st && now - since > LEGACY_KNOWN_ERRORS_MS) out.knownErrors = undefined; // removes it
   return out;
 }
 
-async function stopConnector() {
-  alarm.silence();
+/** The old known-error map while it's still read (see knownErrorsToSave): a copy, so the saved one stays as it is. */
+function legacyKnownErrorsInUse() {
+  const { knownErrors: old, knownErrorsV2Since: since } = stateStore.get();
+  if (!old || typeof old !== 'object' || !Object.keys(old).length) return undefined;
+  if (since && Date.now() - since > LEGACY_KNOWN_ERRORS_MS) return undefined;
+  return { ...old };
+}
+
+/**
+ * What gets saved together with lastSeenAt: known error types, each pod's
+ * restart count so the next recap can tell exactly what restarted in between,
+ * and what's silenced or muted. Live only: nothing from demo mode is saved.
+ */
+function awayState() {
+  if (!pipeline || mode !== 'live') return {};
+  const out = knownErrorsToSave(pipeline);
+  const snap = pipeline.restartSnapshot();
+  if (snap) out.restartSnapshot = snap;
+  out.alertSilence = pipeline.alerts.stateToSave();
+  return out;
+}
+
+/**
+ * lastSeenAt: until when the live data was seen, where the next recap starts. Offline nothing is
+ * seen, so it stays where it was and the recap after reconnecting (or the next start) covers it.
+ */
+function seenNow(now = Date.now()) {
+  return connectivity?.online === false ? {} : { lastSeenAt: now };
+}
+
+async function stopConnectorNow() {
+  // The session's siren stops with it; the quiet window after a Silence carries on into the next one.
+  alarm.reset();
   send({ t: 'sound-stop' });
   for (const stop of follows.values()) stop();
   follows.clear();
@@ -480,51 +614,58 @@ async function stopConnector() {
   // restart (e.g. after waking up) still knows where the recap should start.
   if (pipeline && mode === 'live') {
     clearTimeout(historyTimer);
-    await stateStore.update({ knownErrors: pipeline.knownErrors(), alertHistory: pipeline.alerts.historyToSave() });
-  }
+    await stateStore.update({ ...knownErrorsToSave(pipeline), alertHistory: pipeline.historyToSave(), alertSilence: pipeline.alerts.stateToSave() });
+  } else if (pipeline && mode === 'demo') demoAlertState = pipeline.alerts.stateToSave();
   pipeline?.destroy();
   pipeline = null;
   resetGuard();
 }
 
-async function startLive({ recapSince } = {}) {
-  await stopConnector();
+async function startLiveNow({ recapSince } = {}) {
+  // A restart queued behind a sign-out has nothing to sign in with.
+  if (!auth) return;
+  await stopConnectorNow();
   mode = 'live';
-  const p = newPipeline('live');
   const st = stateStore.get();
-  connector = new LiveConnector({ config: config(), auth, dbAuth: databaseAuth(), pipeline: p, settings: settingsStore.get(), lastSeenAt: recapSince ?? st.lastSeenAt ?? null, knownErrors: st.knownErrors || {}, restartSnapshot: st.restartSnapshot || null });
+  const legacy = legacyKnownErrorsInUse();
+  // Separate copies: the pipeline adds to its map as errors come in, while the
+  // recap compares against what was known before.
+  const p = newPipeline('live', { knownErrors: { ...st.knownErrorsV2 }, legacyKnownErrors: legacy });
+  connector = new LiveConnector({ config: config(), auth, dbAuth: databaseAuth(), pipeline: p, settings: settingsStore.get(), lastSeenAt: recapSince ?? st.lastSeenAt ?? null, knownErrors: { ...st.knownErrorsV2 }, legacyKnownErrors: legacy, restartSnapshot: st.restartSnapshot || null, pastWeekCache, connectivity });
   await connector.start();
   let lastBeat = Date.now();
   heartbeat = setInterval(() => {
     const now = Date.now();
     // A late tick means the computer was asleep: leave lastSeenAt where it was so
-    // the wake-up recap covers the gap.
-    if (now - lastBeat < 3 * MIN) stateStore.update({ lastSeenAt: now, ...awayState() });
+    // the wake-up recap covers the gap. Offline, nothing is seen either (seenNow).
+    if (now - lastBeat < 3 * MIN) stateStore.update({ ...seenNow(now), ...awayState() });
     lastBeat = now;
   }, MIN);
+  syncCosts();
   send({ t: 'session', info: publicInfo() });
   send({ t: 'state', sections: p.fullState() });
   updateTray();
 }
 
-async function startDemo() {
-  await stopConnector();
+async function startDemoNow() {
+  await stopConnectorNow();
   mode = 'demo';
   const p = newPipeline('demo');
   connector = new DemoConnector({ pipeline: p, lastSeenAt: null });
   connector.start();
+  syncCosts();
   send({ t: 'session', info: publicInfo() });
   send({ t: 'state', sections: p.fullState() });
   updateTray();
 }
 
-async function restoreSession() {
+async function restoreSessionNow() {
   const saved = secrets.get('session');
   if (!saved) return false;
   try {
     if (saved.kind !== 'service-account') return false;
     auth = new ServiceAccountAuth(saved.key);
-    await startLive();
+    await startLiveNow();
     return true;
   } catch (e) {
     console.warn('[session] restore failed:', e.message);
@@ -533,18 +674,38 @@ async function restoreSession() {
   }
 }
 
-async function signOut() {
-  await stopConnector();
+async function signOutNow() {
+  await stopConnectorNow();
   try {
     await auth?.signOut();
   } catch {}
   auth = null;
   mode = 'signed-out';
+  pastWeekCache = {};
   // Signing out takes every Google key off this computer, the database's too.
   await secrets.clear(['session', 'databaseKey']);
+  syncCosts();
   send({ t: 'session', info: publicInfo() });
   updateTray();
 }
+
+// Session changes (sign-in, a restart after a settings change or waking up, demo,
+// sign-out) run one at a time. Two overlapping restarts used to leave the first new
+// connector running unseen: its streams, and one of the project's 10 live-tail slots,
+// kept going with nobody listening.
+let sessionQueue = Promise.resolve();
+function serialized(fn) {
+  const run = sessionQueue.then(() => fn(), () => fn());
+  sessionQueue = run.catch(() => {});
+  return run;
+}
+const stopConnector = () => serialized(stopConnectorNow);
+// "Reconnect if we're live" decides when it runs, not when it's asked for: a demo or a
+// sign-out queued in between wins (a wake-up during "Try demo" used to switch back to live).
+const restartLive = (o) => serialized(() => (mode === 'live' ? startLiveNow(o) : undefined));
+const startDemo = () => serialized(startDemoNow);
+const restoreSession = () => serialized(restoreSessionNow);
+const signOut = () => serialized(signOutNow);
 
 /** Accepts "flobi", "https://flobi.sentry.io" or ".../organizations/flobi/". */
 function sentryOrgSlug(org) {
@@ -577,9 +738,12 @@ const commands = {
     }
     const candidate = new ServiceAccountAuth(keyText);
     await candidate.getToken('read'); // proves the key works before we keep it
-    auth = candidate;
-    await secrets.set('session', { kind: 'service-account', key: keyText });
-    await startLive();
+    // One step with the switch itself, so a sign-out still under way can't undo it halfway.
+    await serialized(async () => {
+      auth = candidate;
+      await secrets.set('session', { kind: 'service-account', key: keyText });
+      await startLiveNow();
+    });
     return publicInfo();
   },
 
@@ -593,14 +757,16 @@ const commands = {
     return publicInfo();
   },
 
-  'demo:stop': async () => {
-    await stopConnector();
-    mode = 'signed-out';
-    if (await restoreSession()) return publicInfo();
-    send({ t: 'session', info: publicInfo() });
-    updateTray();
-    return publicInfo();
-  },
+  'demo:stop': async () =>
+    serialized(async () => {
+      await stopConnectorNow();
+      mode = 'signed-out';
+      if (await restoreSessionNow()) return publicInfo();
+      syncCosts();
+      send({ t: 'session', info: publicInfo() });
+      updateTray();
+      return publicInfo();
+    }),
 
   'settings:set': async ({ patch }) => {
     const before = settingsStore.get();
@@ -621,7 +787,7 @@ const commands = {
     nativeTheme.themeSource = s.appearance.theme;
     if (!!before.general.openAtLogin !== !!s.general.openAtLogin) app.setLoginItemSettings({ openAtLogin: !!s.general.openAtLogin });
     const needsRestart = patch.general && 'liveIncludesInfoLogs' in patch.general;
-    if (needsRestart && mode === 'live') await startLive();
+    if (needsRestart) await restartLive();
     return publicInfo();
   },
 
@@ -629,6 +795,7 @@ const commands = {
     if (github) {
       if ('token' in github) await secrets.set('githubToken', String(github.token || '').trim() || null);
       startVersions();
+      syncCosts(); // the Costs page reads GitHub billing with the same token
       if (!sentry && !cloudflare) return publicInfo();
     }
     const overrides = { ...settingsStore.get().overrides };
@@ -649,7 +816,7 @@ const commands = {
       overrides.cloudflare = { accountId: cloudflare.accountId || '', zones: (cloudflare.zones || []).filter((z) => /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(z)) };
     }
     await settingsStore.update({ overrides });
-    if (mode === 'live') await startLive();
+    await restartLive();
     return publicInfo();
   },
 
@@ -678,14 +845,18 @@ const commands = {
     const candidate = new ServiceAccountAuth(keyText);
     if (auth && candidate.identity.email === auth.identity.email) throw new Error("That's the key you signed in with. Pick the key made for the database's project.");
     await candidate.getToken('platform'); // proves the key works before we keep it
-    await secrets.set('databaseKey', keyText);
-    if (mode === 'live') await startLive();
+    await serialized(async () => {
+      // Signed out meanwhile: that took every Google key off this computer, this one included.
+      if (mode === 'signed-out') return;
+      await secrets.set('databaseKey', keyText);
+      if (mode === 'live') await startLiveNow();
+    });
     return publicInfo();
   },
 
   'database:removeKey': async () => {
     await secrets.set('databaseKey', null);
-    if (mode === 'live') await startLive();
+    await restartLive();
     return publicInfo();
   },
 
@@ -742,7 +913,7 @@ const commands = {
       .filter((t) => /^https:\/\//.test(t.url))
       .map((t, i) => ({ id: t.id || `u${i}-${t.url}`, name: String(t.name || new URL(t.url).host).slice(0, 60), url: t.url, group: t.group === 'frontend' ? 'frontend' : 'backend' }));
     await settingsStore.update({ overrides: { ...settingsStore.get().overrides, uptime: clean } });
-    if (mode === 'live') await startLive();
+    await restartLive();
     return publicInfo();
   },
 
@@ -762,18 +933,27 @@ const commands = {
     follows.delete(id);
     return true;
   },
-  'logs:previous': async (args) => connector?.previousLogs(args) ?? [],
-  'logs:query': async (args) => connector?.queryLogs(args) ?? [],
+  // `restarts` + `at` (from the crash inspector) pick one crash; without them, the latest.
+  'logs:previous': async ({ pod, container, service, restarts, at }) => connector?.previousLogs({ pod, container, service, restarts, at }) ?? [],
+  'logs:query': async (args) => {
+    const items = (await connector?.queryLogs(args)) ?? [];
+    // withMeta: also say whether Google's search stopped early (a flag on the array doesn't survive IPC).
+    return args.withMeta ? { items, truncated: !!items.truncated } : items;
+  },
   'request:logs': async (args) => connector?.requestLogs?.(args) ?? { match: 'none', lines: [] },
   'recap:get': async ({ since, until }) => connector?.recap({ since, until: until || Date.now() }),
   'usage:get': async (args) => connector?.usage(args),
+  // Acknowledge: this alert is silenced like the Silence button does it (no quiet window).
   'alerts:ack': async ({ id }) => {
-    pipeline?.alerts.ack(id);
+    pipeline?.alerts.silence([id]);
     alarm.check();
     return true;
   },
-  'alerts:mute': async ({ service, minutes }) => {
-    pipeline?.alerts.mute(service, minutes);
+  // `target`: a service name, or "key:<alert key>" for one alert. Older UIs send `service`.
+  'alerts:mute': async ({ target, service, minutes }) => {
+    const what = target || service;
+    if (!what || typeof what !== 'string') throw new Error('Nothing to mute.');
+    pipeline?.alerts.mute(what, minutes);
     alarm.check();
     return true;
   },
@@ -830,6 +1010,21 @@ const commands = {
     await stateStore.update({ versionsViewedAt: Date.now() });
     send({ t: 'versions', versions: versionsState() });
     return versionsState();
+  },
+  // Costs page (see core/costs.mjs). Refresh runs at most once a minute.
+  'costs:refresh': async () => costs?.refresh() ?? null,
+  // Settings → Costs: the billing table, GitHub billing account, items typed in, rates, and the
+  // OpenRouter and fal keys (those go to the encrypted secrets, never to settings.json; '' removes one).
+  'costs:set': async (patch = {}) => {
+    const { openrouterKey, falKey, ...rest } = patch || {};
+    const keys = {};
+    if (openrouterKey !== undefined) keys.openrouterKey = cleanApiKey(openrouterKey, 'OpenRouter');
+    if (falKey !== undefined) keys.falKey = cleanApiKey(falKey, 'fal');
+    const next = cleanCostsSettings(rest, settingsStore.get().costs);
+    for (const [k, v] of Object.entries(keys)) await secrets.set(k, v);
+    await settingsStore.replace('costs', next);
+    syncCosts();
+    return publicInfo();
   },
   'update:check': async () => updater?.check({ manual: true }) ?? null,
   'update:install': async () => {
@@ -896,7 +1091,8 @@ app.on('second-instance', () => showWindow());
 app.whenReady().then(async () => {
   const userData = app.getPath('userData');
   settingsStore = new JsonStore(path.join(userData, 'settings.json'), DEFAULT_SETTINGS);
-  stateStore = new JsonStore(path.join(userData, 'state.json'), { lastSeenAt: null, knownErrors: {} });
+  // Every state update replaces whole keys (see JsonStore), so saved maps can shrink.
+  stateStore = new JsonStore(path.join(userData, 'state.json'), { lastSeenAt: null }, { shallow: true });
   secrets = new SecureStore({ dir: userData, safeStorage });
   await Promise.all([settingsStore.load(), stateStore.load(), secrets.load()]);
   team = await loadTeamConfig();
@@ -913,20 +1109,68 @@ app.whenReady().then(async () => {
   createWindow();
   createTray();
 
+  // Offline, nothing is called down and no alert opens: the page says it's offline and shows what
+  // it last saw. Back after more than half a minute (or before the cluster was ever reached, say
+  // the app started before the Wi-Fi), everything reconnects at once instead of waiting out each
+  // stream's retry, and the recap covers the gap (lastSeenAt stays put while offline).
+  let offlineSince = null;
+  connectivity = new Connectivity({
+    onChange: (state) => {
+      if (mode === 'live') {
+        pipeline?.setConnectivity(state);
+        if (!state.online) send({ t: 'sound-stop' }); // a siren already sounding stops too
+        sendAlarm();
+      }
+      updateTray();
+      const was = offlineSince;
+      offlineSince = state.online ? null : state.since;
+      const neverConnected = mode === 'live' && pipeline && !pipeline.synced.has('pods');
+      if (state.online && was && (Date.now() - was > 30_000 || neverConnected)) restartLive().catch((e) => console.error('[online] reconnecting failed:', e));
+    },
+  });
+  // The operating system says when the network comes or goes (Wi-Fi off, cable out): check then.
+  let osOnline = net.isOnline();
+  setInterval(() => {
+    const now = net.isOnline();
+    if (now !== osOnline) {
+      osOnline = now;
+      connectivity.check({ force: true }).catch(() => {});
+    }
+  }, 3000);
+
   updater = new Updater({ repo: await releaseRepo(), onChange: (update) => send({ t: 'update', update }), quit: () => ((quitting = true), app.quit()) });
   updater.start();
   startVersions();
+  costs = new CostsService({
+    dir: userData,
+    stateStore,
+    isOffline,
+    onChange: (c) => {
+      send({ t: 'costs', costs: c });
+      // The billing export's share of BigQuery's free storage, for the alert when it gets close;
+      // the credits below the amount set to alert at (Settings → Costs), for theirs.
+      billingStorage = c?.vendors?.find((v) => v.id === 'gcp')?.storage || null;
+      pipeline?.setBillingStorage(billingStorage);
+      billingCredits = lowCredits(c);
+      pipeline?.setBillingCredits(billingCredits);
+    },
+  });
 
   if (START_IN_DEMO) await startDemo();
   else await restoreSession();
 
   powerMonitor.on('resume', async () => {
-    updater?.checkIfStale(0);
-    // Streams may have died while the laptop slept; reconnect and recap the gap.
-    if (mode === 'live') await startLive({ recapSince: stateStore.get().lastSeenAt });
+    try {
+      connectivity.check({ force: true }).catch(() => {});
+      updater?.checkIfStale(0);
+      // Streams may have died while the laptop slept; reconnect and recap the gap.
+      await restartLive({ recapSince: stateStore.get().lastSeenAt });
+    } catch (e) {
+      console.error('[resume] reconnecting failed:', e);
+    }
   });
   powerMonitor.on('suspend', () => {
-    if (mode === 'live') stateStore.update({ lastSeenAt: Date.now(), ...awayState() });
+    if (mode === 'live') stateStore.update({ ...seenNow(), ...awayState() });
   });
 });
 
@@ -936,12 +1180,26 @@ app.on('before-quit', () => {
   quitting = true;
 });
 
+let savingOnQuit = false;
 app.on('will-quit', async (e) => {
-  if (mode === 'live' && pipeline) {
-    e.preventDefault();
-    const away = awayState();
+  updater?.stop();
+  versions?.stop();
+  costs?.stop();
+  // Quit again while the state is being saved (Cmd+Q twice, the updater): the save
+  // already under way exits when it's done.
+  if (savingOnQuit) return e.preventDefault();
+  if (mode !== 'live' || !pipeline) return;
+  e.preventDefault();
+  savingOnQuit = true;
+  // However the save goes (it throws, it hangs), the app still exits.
+  setTimeout(() => app.exit(0), 5_000);
+  try {
+    const away = { ...seenNow(), ...awayState() };
     await stopConnector();
-    await stateStore.update({ lastSeenAt: Date.now(), ...away });
+    await stateStore.update(away);
+  } catch (err) {
+    console.error('[quit] saving the state failed:', err);
+  } finally {
     mode = 'signed-out';
     destroyAgents();
     app.exit(0);

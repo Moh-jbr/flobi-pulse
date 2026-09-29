@@ -140,11 +140,14 @@ test('ErrorBook groups, attaches stack frames, and baselines the first run', () 
 test('AlertBook opens once, resolves when the condition clears, dedupes one-shots', () => {
   const opened = [];
   const resolved = [];
-  const book = new AlertBook({ onOpen: (a) => opened.push(a.key), onResolve: (a) => resolved.push(a.key) });
+  let now = 0;
+  const book = new AlertBook({ now: () => now, onOpen: (a) => opened.push(a.key), onResolve: (a) => resolved.push(a.key) });
   const cond = { key: 'svc-down:x', kind: 'service', service: 'x', severity: 'critical', title: 'x is down' };
   book.reconcile([cond]);
   book.reconcile([cond]);
   assert.deepEqual(opened, ['svc-down:x']);
+  book.reconcile([]);
+  now += 60_000; // resolves once the condition has stayed clear for the hold
   book.reconcile([]);
   assert.deepEqual(resolved, ['svc-down:x']);
   book.happen({ key: 'crash:1', severity: 'critical', title: 'crash' });
@@ -181,8 +184,8 @@ test('recap rebuilds incidents from free sources only (logs, pods, Cloud SQL, Se
       calls.push(filter);
       if (filter.includes('logs/events'))
         return [
-          ev(at(4, 0), 'Warning', 'FailedScheduling', '0/3 nodes are available: insufficient memory', 'Pod', 'flobi-media-worker-1234567890-aaaaa'),
-          ev(at(5, 0), 'Warning', 'BackOff', 'Back-off restarting failed container flobi-notes in pod flobi-notes-6b7c8d9e0f-zzzzz', 'Pod', 'flobi-notes-6b7c8d9e0f-zzzzz'),
+          ev(at(4, 0), 'Warning', 'FailedScheduling', '0/3 nodes are available: insufficient memory', 'Pod', 'flobi-media-worker-7c9d8f6b5d-bbbbb'),
+          ev(at(5, 0), 'Warning', 'BackOff', 'Back-off restarting failed container flobi-notes in pod flobi-notes-6b7c8d9f2f-zzzzz', 'Pod', 'flobi-notes-6b7c8d9f2f-zzzzz'),
           ev(at(6, 0), 'Normal', 'ScalingReplicaSet', 'Scaled up replica set flobi-notes-aaaa to 1', 'Deployment', 'flobi-notes'),
           ev(at(6, 2), 'Normal', 'ScalingReplicaSet', 'Scaled down replica set flobi-notes-bbbb to 0 from 1', 'Deployment', 'flobi-notes'),
         ];

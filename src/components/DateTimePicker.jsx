@@ -3,7 +3,7 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import Icon from './icons.jsx';
-import { cx } from './ui.jsx';
+import { cx, LAYER, useLayer, useFloatingFocus } from './ui.jsx';
 
 const pad = (n) => String(n).padStart(2, '0');
 export const toLocalInput = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
@@ -43,10 +43,16 @@ function Stepper({ value, onChange, max, label }) {
 
 export default function DateTimePicker({ value, onChange, max, label }) {
   const btn = useRef(null);
+  const panel = useRef(null);
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState(null);
   const sel = parse(value);
   const [month, setMonth] = useState(() => new Date(sel.getFullYear(), sel.getMonth(), 1));
+  const close = () => setOpen(false);
+  // Escape closes it wherever focus is (it's a layer, see useLayer); focus goes into the
+  // calendar when it opens and back to the button when it closes.
+  useLayer(open, LAYER.picker, close);
+  const onPanelKey = useFloatingFocus(panel, open && !!pos, close);
 
   const place = () => {
     const r = btn.current.getBoundingClientRect();
@@ -84,6 +90,8 @@ export default function DateTimePicker({ value, onChange, max, label }) {
         ref={btn}
         type="button"
         aria-label={label}
+        aria-haspopup="dialog"
+        aria-expanded={open}
         onClick={() => {
           setMonth(new Date(sel.getFullYear(), sel.getMonth(), 1));
           place();
@@ -97,8 +105,16 @@ export default function DateTimePicker({ value, onChange, max, label }) {
       {open &&
         pos &&
         createPortal(
-          <div className="fixed inset-0 z-[60] no-drag" onMouseDown={(e) => e.target === e.currentTarget && setOpen(false)} onKeyDown={(e) => e.key === 'Escape' && (e.stopPropagation(), setOpen(false))}>
-            <div className="absolute rounded-[18px] bg-elevated shadow-[var(--shadow-pop),0_0_0_0.5px_var(--separator)] p-3 animate-sheet" style={{ left: pos.left, top: pos.top, bottom: pos.bottom, width: pos.width }}>
+          <div className="fixed inset-0 z-picker no-drag" data-layer="picker" onMouseDown={(e) => e.target === e.currentTarget && close()}>
+            <div
+              ref={panel}
+              role="dialog"
+              aria-label={label ? `${label}: choose a date and time` : 'Choose a date and time'}
+              tabIndex={-1}
+              onKeyDown={onPanelKey}
+              className="absolute rounded-[18px] bg-elevated shadow-[var(--shadow-pop),0_0_0_0.5px_var(--separator)] p-3 animate-sheet outline-none"
+              style={{ left: pos.left, top: pos.top, bottom: pos.bottom, width: pos.width }}
+            >
               <div className="flex items-center justify-between mb-2 px-1">
                 <span className="text-headline font-semibold">{month.toLocaleString([], { month: 'long', year: 'numeric' })}</span>
                 <span className="flex gap-1">
@@ -146,7 +162,7 @@ export default function DateTimePicker({ value, onChange, max, label }) {
                   <button type="button" onClick={() => emit(new Date())} className="h-6 px-2.5 rounded-full bg-fill-3 hover:bg-fill-2 text-callout">
                     Now
                   </button>
-                  <button type="button" onClick={() => setOpen(false)} className="h-6 px-3 rounded-full bg-accent text-white text-callout font-medium">
+                  <button type="button" onClick={close} className="h-6 px-3 rounded-full bg-accent text-white text-callout font-medium">
                     Done
                   </button>
                 </div>

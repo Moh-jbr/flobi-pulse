@@ -12,7 +12,20 @@
   • Motion: springs; everything collapses to fades with Reduce Motion.
 */
 
-@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+/* Dark when the app is set to dark, and also whenever the OS is dark unless the app is set to
+   light. The media branch covers the first frames, before the app has read its setting and put
+   data-theme on <html>; in Electron the setting drives prefers-color-scheme too
+   (nativeTheme.themeSource), so a forced theme is right from the first frame as well. */
+@custom-variant dark {
+  &:where([data-theme='dark'], [data-theme='dark'] *) {
+    @slot;
+  }
+  @media (prefers-color-scheme: dark) {
+    &:where(:root:not([data-theme='light']), :root:not([data-theme='light']) *) {
+      @slot;
+    }
+  }
+}
 
 @theme {
   --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
@@ -132,47 +145,50 @@
   --code-bg: #f6f6f8;
 }
 
-:root[data-theme='dark'] {
-  color-scheme: dark;
-  --bg-content: #161618;
-  --bg-elevated: #1e1e21;
-  --bg-grouped: #111113;
-  --label: rgb(255 255 255 / 0.92);
-  --label-2: rgb(235 235 245 / 0.62);
-  --label-3: rgb(235 235 245 / 0.34);
-  --label-4: rgb(235 235 245 / 0.18);
-  --separator: rgb(255 255 255 / 0.09);
-  --tooltip-bg: rgb(245 245 247 / 0.96);
-  --tooltip-fg: #1d1d1f;
-  --fill-1: rgb(120 120 128 / 0.36);
-  --fill-2: rgb(120 120 128 / 0.28);
-  --fill-3: rgb(118 118 128 / 0.22);
-  --fill-4: rgb(116 116 128 / 0.14);
-  --accent: #0091ff;
-  --accent-tint: rgb(0 145 255 / 0.2);
-  --green: #30d158;
-  --orange: #ff9230;
-  --red: #ff4245;
-  --yellow: #ffd600;
-  --purple: #db34f2;
-  --teal: #00d2e0;
-  --indigo: #6d7cff;
-  --gray: #98989d;
-  --green-tint: rgb(48 209 88 / 0.18);
-  --orange-tint: rgb(255 146 48 / 0.2);
-  --red-tint: rgb(255 66 69 / 0.2);
-  --gray-tint: rgb(152 152 157 / 0.2);
-  --thumb: #5a5a5f;
+/* The dark tokens, once: `@variant dark` puts them under both branches of the variant above. */
+:root {
+  @variant dark {
+    color-scheme: dark;
+    --bg-content: #161618;
+    --bg-elevated: #1e1e21;
+    --bg-grouped: #111113;
+    --label: rgb(255 255 255 / 0.92);
+    --label-2: rgb(235 235 245 / 0.62);
+    --label-3: rgb(235 235 245 / 0.34);
+    --label-4: rgb(235 235 245 / 0.18);
+    --separator: rgb(255 255 255 / 0.09);
+    --tooltip-bg: rgb(245 245 247 / 0.96);
+    --tooltip-fg: #1d1d1f;
+    --fill-1: rgb(120 120 128 / 0.36);
+    --fill-2: rgb(120 120 128 / 0.28);
+    --fill-3: rgb(118 118 128 / 0.22);
+    --fill-4: rgb(116 116 128 / 0.14);
+    --accent: #0091ff;
+    --accent-tint: rgb(0 145 255 / 0.2);
+    --green: #30d158;
+    --orange: #ff9230;
+    --red: #ff4245;
+    --yellow: #ffd600;
+    --purple: #db34f2;
+    --teal: #00d2e0;
+    --indigo: #6d7cff;
+    --gray: #98989d;
+    --green-tint: rgb(48 209 88 / 0.18);
+    --orange-tint: rgb(255 146 48 / 0.2);
+    --red-tint: rgb(255 66 69 / 0.2);
+    --gray-tint: rgb(152 152 157 / 0.2);
+    --thumb: #5a5a5f;
 
-  --glass-rgb: 34 34 38;
-  --glass-border: rgb(255 255 255 / 0.1);
-  --glass-edge: rgb(0 0 0 / 0.5);
-  --glass-highlight: rgb(255 255 255 / 0.1);
-  --shadow-glass: 0 12px 40px rgb(0 0 0 / 0.45), 0 2px 8px rgb(0 0 0 / 0.3);
-  --shadow-card: 0 0 0 0.5px rgb(255 255 255 / 0.07);
-  --shadow-pop: 0 30px 80px rgb(0 0 0 / 0.6), 0 4px 16px rgb(0 0 0 / 0.4);
-  --scrim: rgb(0 0 0 / 0.4);
-  --code-bg: #111113;
+    --glass-rgb: 34 34 38;
+    --glass-border: rgb(255 255 255 / 0.1);
+    --glass-edge: rgb(0 0 0 / 0.5);
+    --glass-highlight: rgb(255 255 255 / 0.1);
+    --shadow-glass: 0 12px 40px rgb(0 0 0 / 0.45), 0 2px 8px rgb(0 0 0 / 0.3);
+    --shadow-card: 0 0 0 0.5px rgb(255 255 255 / 0.07);
+    --shadow-pop: 0 30px 80px rgb(0 0 0 / 0.6), 0 4px 16px rgb(0 0 0 / 0.4);
+    --scrim: rgb(0 0 0 / 0.4);
+    --code-bg: #111113;
+  }
 }
 
 @layer base {
@@ -370,11 +386,6 @@
     transform: translateY(10px) scale(0.96);
   }
 }
-@keyframes row-in {
-  from {
-    background-color: var(--accent-tint);
-  }
-}
 @keyframes pulse-ring {
   0% {
     transform: scale(0.8);
@@ -416,9 +427,6 @@
 }
 @utility animate-sheet {
   animation: sheet-in 600ms var(--ease-spring) both;
-}
-@utility animate-row {
-  animation: row-in 1200ms ease-out both;
 }
 @utility animate-toast {
   animation: toast-in 620ms var(--ease-spring) both;
@@ -483,6 +491,11 @@
   .live-dot::after {
     display: none;
   }
+  /* A spinner that stops looks like a hang: keep it turning, just slower. */
+  .spinner {
+    animation-duration: 1.8s !important;
+    animation-iteration-count: infinite !important;
+  }
 }
 
 /* Reduce Transparency: solid surfaces everywhere */
@@ -492,12 +505,30 @@
   background-color: var(--bg-elevated);
 }
 
-/* Compact density */
-:root[data-density='compact'] {
-  --row-h: 26px;
+/* ── Layers ───────────────────────────────────────────────────────────────────
+   One z-scale for everything that floats. Sheets, popovers, lists, toasts, tooltips and the
+   right-click menu are all portals in <body>, so these numbers alone decide what covers what:
+   a popover or list opened inside a sheet stays on top of it, and so does the alarm banner. */
+@utility z-inspector {
+  z-index: 40; /* the inspector when it floats over the content */
 }
-:root {
-  --row-h: 30px;
+@utility z-sheet {
+  z-index: 50; /* sheets and the command palette */
+}
+@utility z-popover {
+  z-index: 60;
+}
+@utility z-picker {
+  z-index: 70; /* Select lists and the date picker */
+}
+@utility z-toast {
+  z-index: 75; /* toasts and the alarm banner */
+}
+@utility z-tooltip {
+  z-index: 80;
+}
+@utility z-menu {
+  z-index: 90; /* the right-click menu */
 }
 
 /* Windows: leave room for the native caption buttons (min / max / close). */

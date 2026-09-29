@@ -1,11 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useStore, invoke, navigate } from '../lib/store.js';
 import { ViewScroll } from '../components/Toolbar.jsx';
 import { Card, Segmented, Spinner, Empty, Button } from '../components/ui.jsx';
-import { SummaryChips, TimelineStrip, IncidentList, RecapExtras, INCIDENT_COLUMNS } from '../components/Recap.jsx';
+import { SummaryChips, TimelineStrip, IncidentList, RecapExtras, INCIDENT_COLUMNS, byStart } from '../components/Recap.jsx';
 import { dayTime, duration } from '../lib/format.js';
-import DateTimePicker from '../components/DateTimePicker.jsx';
+import DateTimePicker, { toLocalInput } from '../components/DateTimePicker.jsx';
 import ExportButton from '../components/ExportButton.jsx';
+import { cleanError } from './Traffic.jsx';
 
 const H = 3600_000;
 const PRESETS = [
@@ -16,27 +17,30 @@ const PRESETS = [
   { value: 'custom', label: 'Custom' },
 ];
 
-const toLocalInput = (ms) => {
-  const d = new Date(ms);
-  d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
-  return d.toISOString().slice(0, 16);
-};
+const localInput = (ms) => toLocalInput(new Date(ms));
 
 export default function Timeline() {
   const auto = useStore((s) => s.sections.recap);
   const [preset, setPreset] = useState('24h');
-  const [from, setFrom] = useState(toLocalInput(Date.now() - 24 * H));
-  const [until, setUntil] = useState(toLocalInput(Date.now()));
+  const [from, setFrom] = useState(() => localInput(Date.now() - 24 * H));
+  const [until, setUntil] = useState(() => localInput(Date.now()));
   const [state, setState] = useState({ loading: false, recap: null, error: null });
+  // Only the latest request fills the page: a slow 7-day read must not land over the 1-hour one asked for after it.
+  const run = useRef(0);
 
   const load = async (since, to) => {
+    const id = ++run.current;
     setState({ loading: true, recap: null, error: null });
     try {
       const recap = await invoke('recap:get', { since, until: to });
-      setState({ loading: false, recap, error: null });
+      if (id === run.current) setState({ loading: false, recap, error: null });
     } catch (e) {
-      setState({ loading: false, recap: null, error: e.message });
+      if (id === run.current) setState({ loading: false, recap: null, error: cleanError(e) });
     }
+  };
+  const showRecap = (recap) => {
+    run.current++;
+    setState({ loading: false, recap, error: null });
   };
 
   useEffect(() => {
@@ -45,13 +49,17 @@ export default function Timeline() {
     load(Date.now() - p.ms, Date.now());
   }, [preset]);
 
+  const fromMs = new Date(from).getTime();
+  const untilMs = new Date(until).getTime();
+  const rangeError = Number.isNaN(fromMs) || Number.isNaN(untilMs) ? 'Pick a start and an end.' : fromMs >= untilMs ? 'The start has to be before the end.' : null;
+
   const { recap } = state;
   return (
     <ViewScroll>
       <div className="flex items-center gap-2 flex-wrap mb-4 animate-rise">
         <Segmented value={preset} onChange={setPreset} options={PRESETS.map(({ value, label }) => ({ value, label }))} />
         {auto && (
-          <Button size="md" variant="tinted" icon="history" onClick={() => setState({ loading: false, recap: auto, error: null })}>
+          <Button size="md" variant="tinted" icon="history" onClick={() => showRecap(auto)}>
             Since I was last here
           </Button>
         )}
@@ -59,10 +67,11 @@ export default function Timeline() {
           <div className="flex items-center gap-2 ml-2 animate-fade">
             <DateTimePicker label="From" value={from} onChange={setFrom} max={until} />
             <span className="text-label-3">→</span>
-            <DateTimePicker label="Until" value={until} onChange={setUntil} max={toLocalInput(Date.now())} />
-            <Button variant="primary" onClick={() => load(new Date(from).getTime(), new Date(until).getTime())}>
+            <DateTimePicker label="Until" value={until} onChange={setUntil} max={localInput(Date.now())} />
+            <Button variant="primary" disabled={!!rangeError} onClick={() => load(fromMs, untilMs)}>
               Show
             </Button>
+            {rangeError && <span className="text-callout text-red">{rangeError}</span>}
           </div>
         )}
       </div>
@@ -72,7 +81,7 @@ export default function Timeline() {
           <Spinner size={20} /> Rebuilding the timeline from Cloud Logging…
         </Card>
       )}
-      {state.error && <Card className="!bg-red-tint text-callout">{state.error}</Card>}
+      {state.error && <Card className="!bg-red-tint text-callout selectable">{state.error}</Card>}
       {recap && (
         <div className="flex flex-col gap-4 animate-rise">
           <Card className="flex flex-col gap-4">
@@ -80,9 +89,10 @@ export default function Timeline() {
               <div className="text-title2 font-semibold">{recap.headline}</div>
               <div className="flex items-center gap-3">
                 <span className="text-callout text-label-2">
-                  {dayTime(recap.since)} → {dayTime(recap.until)} · {duration(recap.until - recap.since)}
+                  {dayTime(recap.since)} → {dayTime(recap.until)}
+                  {recap.until > recap.since ? ` · ${duration(recap.until - recap.since)}` : ''}
                 </span>
-                <ExportButton name="timeline" title="Timeline" columns={INCIDENT_COLUMNS} rows={recap.incidents} />
+                <ExportButton name="timeline" title="Timeline" columns={INCIDENT_COLUMNS} rows={byStart(recap.incidents)} />
               </div>
             </div>
             <SummaryChips summary={recap.summary} />

@@ -4,7 +4,7 @@
 // Everything used here is free to read. Cloud Monitoring (billed per read) is
 // not used at all.
 import { configureGuard } from '../net/guard.mjs';
-import { resolveCluster, KubeClient, Informer, MetricsPoller, resourcePaths } from '../sources/kubernetes.mjs';
+import { resolveCluster, KubeClient, Informer, MetricsPoller, resourcePaths, splitTimestamp } from '../sources/kubernetes.mjs';
 import { LoggingClient } from '../sources/logging.mjs';
 import { CloudSqlClient, parseConnectionName } from '../sources/cloudsql.mjs';
 import { SentryClient, explainSentryError } from '../sources/sentry.mjs';
@@ -13,8 +13,12 @@ import { UptimeMonitor } from '../sources/uptime.mjs';
 import { listCloudRunServices } from '../sources/cloudrun.mjs';
 import { lookupDomain } from '../sources/dns.mjs';
 import { normalizeEntry, k8sLogLine } from './normalize.mjs';
+// Namespace import: a missing optional export (workloadFromPodName) reads as
+// undefined instead of failing to link the whole module.
+import * as norm from './normalize.mjs';
 import { slim } from './model.mjs';
-import { buildRecap } from './recap.mjs';
+import { buildRecap, recapFilters } from './recap.mjs';
+import { loadPastWeek, processSlice, PAST_READ_GAP_MS } from './backfill.mjs';
 
 const MIN = 60_000;
 const iso = (ms) => new Date(ms).toISOString();
@@ -39,8 +43,16 @@ function friendlyK8sError(e, endpoint) {
 }
 
 export class LiveConnector {
-  constructor({ config, auth, dbAuth, pipeline, settings, lastSeenAt, knownErrors, restartSnapshot }) {
+  /**
+   * pastWeekCache: an object kept across restarts (main.mjs), where the past-week load keeps
+   * what it read, so a restart only reads the gap. pastReadGapMs: the pause between its reads.
+   */
+  constructor({ config, auth, dbAuth, pipeline, settings, lastSeenAt, knownErrors, legacyKnownErrors, restartSnapshot, pastWeekCache, pastReadGapMs = PAST_READ_GAP_MS, connectivity = null }) {
     this.config = config;
+    // Is this computer online (net/connectivity.mjs)? Asked before a site is called down.
+    this.connectivity = connectivity;
+    this.pastWeekCache = pastWeekCache || null;
+    this.pastReadGapMs = pastReadGapMs;
     this.auth = auth;
     // Optional second service account for a database in another Google Cloud project.
     this.dbAuth = dbAuth || null;
@@ -48,6 +60,8 @@ export class LiveConnector {
     this.settings = settings;
     this.lastSeenAt = lastSeenAt;
     this.knownErrors = knownErrors || {};
+    // Error types known under the old fingerprints (read-only; absent once dropped).
+    this.legacyKnownErrors = legacyKnownErrors || undefined;
     this.restartSnapshot = restartSnapshot || null;
     this.ns = config.namespace;
     this.timers = [];
@@ -55,6 +69,15 @@ export class LiveConnector {
     this.stopped = false;
     this.getToken = () => auth.getToken('read');
     this.getKubeToken = () => auth.getToken('platform');
+  }
+
+  /**
+   * A read just got no answer at all: is this computer offline? Then what was last read stays as
+   * it was (nothing turns into an error), and the pipeline shows the app as offline.
+   */
+  async offlineNow(e) {
+    if (!this.connectivity || e?.status) return false;
+    return this.connectivity.offline({ since: Date.now() }).catch(() => false);
   }
 
   every(ms, fn, { immediate = true } = {}) {
@@ -82,11 +105,11 @@ export class LiveConnector {
     const { projectId } = this.config;
     configureGuard({ projectId });
     this.pipeline.setSession({ mode: 'live', identity: this.auth.identity, projectId, namespace: this.ns, cluster: { name: this.config.cluster.name, location: this.config.cluster.location } });
-    this.logging = new LoggingClient({ projectId, getToken: this.getToken, invalidateToken: () => this.auth.invalidate?.() });
+    this.logging = new LoggingClient({ projectId, getToken: this.getToken, invalidateToken: (t) => this.auth.invalidate?.(t) });
     this.cloudsql = new CloudSqlClient({ projectId, getToken: (project) => this.sqlAuth(project).getToken('platform') });
     if (this.dbAuth) {
       const db = this.dbAuth;
-      this.dbLogging = new LoggingClient({ projectId: db.identity.projectId, getToken: () => db.getToken('read'), invalidateToken: () => db.invalidate?.() });
+      this.dbLogging = new LoggingClient({ projectId: db.identity.projectId, getToken: () => db.getToken('read'), invalidateToken: (t) => db.invalidate?.(t) });
     }
     try {
       this.sentry = new SentryClient(this.config.sentry);
@@ -120,6 +143,58 @@ export class LiveConnector {
         .then((r) => r && this.pipeline.setRecap({ ...r, auto: true }))
         .catch((e) => console.warn('[recap]', e.message));
     }
+    // The past week from the logs, so the pages don't start empty. After the pod list too: it
+    // names the workloads the pods in the logs belong to.
+    this.waitForPods(20_000)
+      .then(() => (this.stopped ? null : this.loadPastWeek()))
+      .catch((e) => console.warn('[past week]', e.message));
+  }
+
+  /** Resolves after `ms`, unless the connector stops first (then never). */
+  nap(ms) {
+    return new Promise((resolve) => (ms > 0 ? this.later(ms, resolve) : resolve()));
+  }
+
+  /**
+   * The past week, rebuilt from Cloud Logging (see backfill.mjs): error groups, container
+   * crashes, Kubernetes events, past incidents for Recent issues, and the Logs page's last 15
+   * minutes. Background reads, newest first, one at a time; nothing it finds notifies. A load
+   * that fails (Google limiting reads, the network) tries again twice, a few minutes apart:
+   * what came in is kept, so only the rest is read.
+   */
+  async loadPastWeek({ now = Date.now(), attempt = 0 } = {}) {
+    const p = this.pipeline;
+    const retries = (end) => end?.status === 'error' && end.code !== 401 && end.code !== 403 && attempt < 2 && !!this.pastWeekCache;
+    const { projectId } = this.config;
+    const ns = this.ns;
+    const cluster = this.config.cluster.name;
+    const info = this.settings?.general?.liveIncludesInfoLogs !== false;
+    // The Logs page's lines are the live stream's container lines, from just before it.
+    const filterOf = ({ kind, from, until }) =>
+      kind === 'logs'
+        ? [`resource.type="k8s_container"`, `resource.labels.namespace_name="${ns}"`, `resource.labels.cluster_name="${cluster}"`, ...(info ? [] : ['severity>=WARNING']), `timestamp>="${iso(from)}"`, `timestamp<"${iso(until)}"`].join(' AND ')
+        : recapFilters({ projectId, namespace: ns, since: from, until })[kind];
+    const podToService = (pod) => this.podToService(pod);
+    const end = await loadPastWeek({
+      now,
+      key: [projectId, ns, cluster, this.auth?.identity?.email || ''].join('|'),
+      cache: this.pastWeekCache,
+      // One page per read (a few more only if Google answers a slow search with empty pages).
+      read: (q) =>
+        this.logging.listAll({ filter: filterOf(q), orderBy: 'timestamp desc', max: q.max, pageSize: q.max, priority: 'background', maxPages: 3 }).catch((e) => {
+          throw e.status === 403 ? Object.assign(new Error("the service account can't read logs (it needs the Logs Viewer role, see SETUP.md)."), { status: 403 }) : e;
+        }),
+      process: (raw) => processSlice({ ...raw, namespace: ns, projectId, podToService }),
+      pause: () => this.nap(this.pastReadGapMs),
+      stopped: () => this.stopped,
+      onStatus: (state) => p.setBackfill(retries(state) ? { ...state, error: `${state.error} It tries again in ${3 * (attempt + 1)} minutes.` } : state),
+      onSlice: (slice) => p.addPast(slice),
+      onRecentLogs: ({ since, until, entries, capped }) => {
+        const ctx = this.normalizeCtx();
+        p.setLogsBefore({ since, until, capped, lines: entries.map((e) => normalizeEntry(e, ctx)).filter((l) => l.kind === 'log').sort((a, b) => a.ts - b.ts) });
+      },
+    });
+    if (retries(end) && !this.stopped) this.later(3 * (attempt + 1) * MIN, () => this.loadPastWeek({ attempt: attempt + 1 }).catch((e) => console.warn('[past week]', e.message)));
   }
 
   waitForPods(maxMs) {
@@ -163,13 +238,14 @@ export class LiveConnector {
       return;
     }
     p.setSession({ cluster: { name: cluster.name, location: cluster.location, endpoint: cluster.endpoint, version: cluster.version, source: cluster.source, caB64: cluster.source === 'gke-api' ? cluster.caB64 : undefined } });
-    this.kube = new KubeClient({ endpoint: cluster.endpoint, caB64: cluster.caB64, getToken: this.getKubeToken });
+    this.kube = new KubeClient({ endpoint: cluster.endpoint, caB64: cluster.caB64, getToken: this.getKubeToken, invalidateToken: (t) => this.auth.invalidate?.(t) });
     try {
       let v;
       try {
         v = await this.kube.version();
       } catch (e) {
-        if (e.status !== 401) throw e;
+        // A client that retries a 401 with a fresh token by itself already did.
+        if (e.status !== 401 || this.kube.invalidateToken) throw e;
         this.auth.invalidate?.(); // one retry with a fresh token
         v = await this.kube.version();
       }
@@ -210,12 +286,17 @@ export class LiveConnector {
     ].join(' OR ');
   }
 
+  /** The workload a pod belongs to: from the pod list, else from the pod's name (pods that are gone), else null. */
+  podToService(pod) {
+    return this.pipeline.model.pods.find((x) => x.name === pod)?.service || norm.workloadFromPodName?.(pod) || null;
+  }
+
   normalizeCtx() {
     const p = this.pipeline;
     return {
       namespace: this.ns,
       routeToService: (h, path) => p.router(h, path),
-      podToService: (pod) => p.model.pods.find((x) => x.name === pod)?.service || null,
+      podToService: (pod) => this.podToService(pod),
     };
   }
 
@@ -323,6 +404,8 @@ export class LiveConnector {
       instances = await this.cloudsql.instances(primary);
     } catch (e) {
       listError = e;
+      // No answer at all, and this computer is offline: keep what was last read.
+      if (await this.offlineNow(e)) return;
     }
     // With a database key, its project is searched too, so no connection name is needed.
     let dbListError = null;
@@ -426,6 +509,7 @@ export class LiveConnector {
         }
         if (this.pipeline.database.logsNote) this.pipeline.setDatabase({ logsNote: null });
       } catch (e) {
+        if (await this.offlineNow(e)) return;
         this.pipeline.setDatabase({ logsNote: e.status === 403 ? `The Postgres errors are in project ${project}: ${this.sqlWho(project)} needs the "Logs Viewer" role there to show them.` : `Couldn't read the Postgres logs in ${project}: ${e.message}` });
       }
     }
@@ -437,6 +521,7 @@ export class LiveConnector {
       this.pipeline.setCloudRun(list);
       this.pipeline.setSource('cloudrun', 'ok');
     } catch (e) {
+      if (await this.offlineNow(e)) return;
       this.pipeline.setSource('cloudrun', e.status === 403 ? 'forbidden' : 'error', e.message);
     }
   }
@@ -477,6 +562,7 @@ export class LiveConnector {
       p.setSentry({ issues, status: 'ok', message: null });
       p.setSource('sentry', 'ok');
     } catch (e) {
+      if (await this.offlineNow(e)) return;
       const msg = explainSentryError(e, this.config.sentry?.org);
       p.setSentry({ status: 'error', message: msg });
       p.setSource('sentry', 'error', msg);
@@ -535,6 +621,7 @@ export class LiveConnector {
       p.setCloudflare(patch);
       p.setSource('cloudflare', patch.status, patch.message);
     } catch (e) {
+      if (await this.offlineNow(e)) return;
       p.setCloudflare({ status: 'error', message: e.message });
       p.setSource('cloudflare', 'error', e.message);
     }
@@ -544,7 +631,7 @@ export class LiveConnector {
   startUptime() {
     const targets = this.config.uptime || [];
     this.pipeline.setUptimeTargets(targets);
-    this.uptime = new UptimeMonitor({ targets, onResult: (t, r) => this.pipeline.setUptime(t, r) }).start();
+    this.uptime = new UptimeMonitor({ targets, onResult: (t, r) => this.pipeline.setUptime(t, r), isOffline: this.connectivity ? (o) => this.connectivity.offline(o) : null }).start();
     this.pipeline.setSource('uptime', 'ok');
   }
 
@@ -580,7 +667,17 @@ export class LiveConnector {
     };
   }
 
-  async previousLogs({ pod, container, service }) {
+  /**
+   * The logs from right before a crash. Kubernetes only keeps a container's previous
+   * run, so for one crash (`restarts`: the restart count it left, `at`: when) that
+   * isn't the latest anymore (the container has restarted since, or the pod was
+   * recreated under the same name), they come from Cloud Logging around `at` instead.
+   */
+  async previousLogs({ pod, container, service, restarts, at }) {
+    const current = this.pipeline.model.pods.find((p) => p.name === pod)?.containers?.find((c) => c.name === container)?.restarts;
+    if (Number.isFinite(restarts) && Number.isFinite(at) && Number.isFinite(current) && current !== restarts) {
+      return this.queryLogs({ pod, from: at - 10 * MIN, until: at + 5_000, limit: 400 });
+    }
     if (!this.kube) throw new Error('Not connected to the cluster yet.');
     let text;
     try {
@@ -589,17 +686,18 @@ export class LiveConnector {
       if (e.status === 400) return []; // no previous container
       if (e.status !== 403) throw e;
       // This key may not read pod logs: Cloud Logging has the same lines, a few
-      // seconds later. Take the 10 minutes before the last crash.
+      // seconds later. Take the 10 minutes before the crash.
       const lt = this.pipeline.model.pods.find((p) => p.name === pod)?.lastTermination;
-      const until = (lt?.at || Date.now()) + 5_000;
+      const until = (Number.isFinite(at) ? at : lt?.at || Date.now()) + 5_000;
       return this.queryLogs({ pod, from: until - 10 * MIN, until, limit: 400 });
     }
+    // Same timestamp parsing as a live follow (lines may contain \r or U+2028).
     return text
       .split('\n')
       .filter(Boolean)
       .map((line) => {
-        const m = line.match(/^(\d{4}-\d{2}-\d{2}T[\d:.]+Z) (.*)$/);
-        return k8sLogLine({ text: m ? m[2] : line, ts: m ? Date.parse(m[1]) : Date.now(), pod, container, service });
+        const { ts, text: body } = splitTimestamp(line);
+        return k8sLogLine({ text: ts ? body : line, ts: (ts && Date.parse(ts)) || Date.now(), pod, container, service });
       });
   }
 
@@ -616,7 +714,10 @@ export class LiveConnector {
     // Someone is looking at a spinner: this goes before background reads.
     const entries = await this.logging.listAll({ filter: parts.join(' AND '), orderBy: 'timestamp desc', max: Math.min(limit, 2000), priority: 'interactive' });
     const ctx = this.normalizeCtx();
-    return entries.map((e) => normalizeEntry(e, ctx)).filter((x) => x.kind === 'log').reverse();
+    const out = entries.map((e) => normalizeEntry(e, ctx)).filter((x) => x.kind === 'log').reverse();
+    // Google's search gave up early (slow range): the Logs page says so.
+    if (entries.truncated) Object.defineProperty(out, 'truncated', { value: true });
+    return out;
   }
 
   /**
@@ -658,6 +759,9 @@ export class LiveConnector {
       cloudflare: this.cloudflare,
       zones: this.cfZones || (this.cloudflare.configured ? await this.cloudflare.zones().then((z) => ((this.cfZones = z), (this._cfZonesAt = Date.now()), z)).catch(() => []) : []),
       knownErrors: this.knownErrors,
+      legacyKnownErrors: this.legacyKnownErrors,
+      // Error lines from pods that are gone still count for their workload.
+      podToService: (pod) => this.podToService(pod),
     });
   }
 

@@ -5,6 +5,9 @@ import tls from 'node:tls';
 import fs from 'node:fs';
 import { openStream, frameMessage, FrameParser, GRPC_CODE } from '../electron/core/net/grpc.mjs';
 import { configureGuard } from '../electron/core/net/guard.mjs';
+import { encodeTailRequest } from '../electron/core/net/protobuf.mjs';
+
+const REQ = encodeTailRequest({ resourceNames: ['projects/flobi-prod-2026'] });
 
 const cert = fs.readFileSync(new URL('./fixtures/tls-cert.pem', import.meta.url));
 const key = fs.readFileSync(new URL('./fixtures/tls-key.pem', import.meta.url));
@@ -59,14 +62,14 @@ test('streams messages and reports trailers status', async () => {
       origin: 'https://logging.googleapis.com',
       path: PATH,
       headers: { authorization: 'Bearer T' },
-      request: Buffer.from('req'),
+      request: REQ,
       onMessage: (m) => messages.push(m.toString()),
       onEnd: resolve,
       connectOptions: connectTo(port),
     });
   });
   server.close();
-  assert.equal(received, 'req');
+  assert.equal(received, REQ.toString());
   assert.deepEqual(messages, ['one', 'two']);
   assert.equal(end.code, GRPC_CODE.OK);
 });
@@ -85,7 +88,7 @@ test('surfaces RESOURCE_EXHAUSTED (all live-tail slots in use)', async () => {
     openStream({
       origin: 'https://logging.googleapis.com',
       path: PATH,
-      request: Buffer.from('req'),
+      request: REQ,
       onMessage: () => {},
       onEnd: resolve,
       connectOptions: connectTo(port),

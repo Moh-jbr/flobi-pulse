@@ -26,7 +26,8 @@ export const STATE_TONE = { ok: 'green', warn: 'orange', bad: 'red', pending: 'a
 export const SEV_TONE = { critical: 'red', warning: 'orange', info: 'accent' };
 
 // ── Buttons ──────────────────────────────────────────────────────────────────
-export function Button({ variant = 'secondary', size = 'md', icon, iconRight, children, className, loading, ...rest }) {
+// `loading` always disables the button (a second click must not submit again), whatever `disabled` says.
+export function Button({ variant = 'secondary', size = 'md', icon, iconRight, children, className, loading, disabled, ...rest }) {
   const sizes = { sm: 'h-6 px-2.5 text-callout gap-1', md: 'h-7 px-3 text-body gap-1.5', lg: 'h-9 px-4 text-title3 gap-2' };
   const variants = {
     primary: 'bg-accent text-white shadow-[0_1px_2px_rgb(0_0_0/0.12),inset_0_0.5px_0_rgb(255_255_255/0.35)] hover:brightness-110',
@@ -39,9 +40,10 @@ export function Button({ variant = 'secondary', size = 'md', icon, iconRight, ch
   return (
     <button
       type="button"
-      className={cx('no-drag press inline-flex shrink-0 items-center justify-center rounded-full font-medium whitespace-nowrap disabled:opacity-40 disabled:pointer-events-none', sizes[size], variants[variant], className)}
-      disabled={loading || rest.disabled}
       {...rest}
+      className={cx('no-drag press inline-flex shrink-0 items-center justify-center rounded-full font-medium whitespace-nowrap disabled:opacity-40 disabled:pointer-events-none', sizes[size], variants[variant], className)}
+      disabled={!!(loading || disabled)}
+      aria-busy={loading ? true : undefined}
     >
       {loading ? <Spinner size={size === 'lg' ? 16 : 13} /> : icon ? <Icon name={icon} size={size === 'lg' ? 17 : 15} /> : null}
       {children}
@@ -107,11 +109,12 @@ export function HealthPill({ health, className }) {
   );
 }
 
+/** An HTTP status. 0 means the client closed the connection before any response: a 4xx-class outcome, not a server error. */
 export function StatusCode({ status }) {
-  const tone = status >= 500 || !status ? 'red' : status >= 400 ? 'orange' : status >= 300 ? 'gray' : 'green';
+  const tone = status === 0 ? 'orange' : status >= 500 || !status ? 'red' : status >= 400 ? 'orange' : status >= 300 ? 'gray' : 'green';
   return (
     <span className={cx('inline-flex items-center justify-center h-5 min-w-10 px-1.5 rounded-md text-subheadline font-semibold tabular font-mono', TONE[tone].bg)}>
-      <span className={TONE[tone].fg}>{status || 'ERR'}</span>
+      <span className={TONE[tone].fg}>{status === 0 ? '0' : status || 'ERR'}</span>
     </span>
   );
 }
@@ -213,7 +216,11 @@ export function Kbd({ children }) {
 }
 
 // ── Inputs ───────────────────────────────────────────────────────────────────
-export function Segmented({ value, onChange, options, size = 'md', className }) {
+/**
+ * A segmented control: a radio group (one tab stop; arrow keys, Home and End move the choice).
+ * `label` names the group for screen readers.
+ */
+export function Segmented({ value, onChange, options, size = 'md', className, label }) {
   const ref = useRef(null);
   const [thumb, setThumb] = useState(null);
   const measure = useCallback(() => {
@@ -226,21 +233,33 @@ export function Segmented({ value, onChange, options, size = 'md', className }) 
     if (ref.current) ro.observe(ref.current);
     return () => ro.disconnect();
   }, [measure]);
+  const current = options.findIndex((o) => o.value === value);
+  const onKeyDown = (e) => {
+    const n = options.length;
+    const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
+    let next = e.key === 'Home' ? 0 : e.key === 'End' ? n - 1 : null;
+    if (step) next = ((current < 0 ? (step > 0 ? -1 : 0) : current) + step + n) % n;
+    if (next == null || !n) return;
+    e.preventDefault();
+    if (next !== current) onChange(options[next].value);
+    ref.current?.querySelector(`[data-v="${CSS.escape(String(options[next].value))}"]`)?.focus();
+  };
   const h = size === 'sm' ? 'h-6' : 'h-7';
   return (
-    <div ref={ref} role="tablist" className={cx('no-drag relative inline-flex items-center p-0.5 rounded-full bg-fill-3', h, className)}>
+    <div ref={ref} role="radiogroup" aria-label={label} onKeyDown={onKeyDown} className={cx('no-drag relative inline-flex items-center p-0.5 rounded-full bg-fill-3', h, className)}>
       {thumb && (
         <span
           className="absolute top-0.5 bottom-0.5 rounded-full bg-thumb shadow-[0_1px_3px_rgb(0_0_0/0.14),0_0_0_0.5px_rgb(0_0_0/0.05)]"
           style={{ left: thumb.left, width: thumb.width, transition: 'left 420ms var(--ease-spring), width 420ms var(--ease-spring)' }}
         />
       )}
-      {options.map((o) => (
+      {options.map((o, i) => (
         <button
           key={String(o.value)}
           data-v={String(o.value)}
-          role="tab"
-          aria-selected={o.value === value}
+          role="radio"
+          aria-checked={o.value === value}
+          tabIndex={o.value === value || (current < 0 && i === 0) ? 0 : -1}
           type="button"
           onClick={() => onChange(o.value)}
           className={cx('relative z-10 h-full px-3 rounded-full inline-flex items-center gap-1.5 whitespace-nowrap transition-colors duration-200', size === 'sm' ? 'text-callout' : 'text-body', o.value === value ? 'text-label font-semibold' : 'text-label-2 hover:text-label')}
@@ -322,19 +341,23 @@ export function Slider({ value, onChange, min = 0, max = 1, step = 0.01, classNa
 }
 
 export function CopyButton({ text, label = 'Copy' }) {
-  const [done, setDone] = useState(false);
+  const [done, setDone] = useState(null); // 'ok' | 'failed' for a moment after a click
   return (
     <Button
       size="sm"
       variant="plain"
-      icon={done ? 'check' : 'copy'}
+      icon={done === 'ok' ? 'check' : done === 'failed' ? 'errors' : 'copy'}
       onClick={async () => {
-        await invoke('clipboard:write', { text });
-        setDone(true);
-        setTimeout(() => setDone(false), 1400);
+        // The clipboard can refuse (a browser preview without permission): say so, the text stays selectable.
+        const ok = await invoke('clipboard:write', { text }).then(
+          () => true,
+          () => false,
+        );
+        setDone(ok ? 'ok' : 'failed');
+        setTimeout(() => setDone(null), ok ? 1400 : 2500);
       }}
     >
-      {done ? 'Copied' : label}
+      {done === 'ok' ? 'Copied' : done === 'failed' ? 'Couldn’t copy' : label}
     </Button>
   );
 }
@@ -351,19 +374,140 @@ export function Meter({ value, warn = 0.8, danger = 0.92, className, height = 4 
   );
 }
 
+// ── Layers ───────────────────────────────────────────────────────────────────
+// Everything that floats registers here while it's open, so one Escape closes only the
+// topmost thing, wherever focus is: tooltip > right-click menu > list or date picker >
+// popover > sheet or palette > inspector. The stacking itself is the z-scale in styles.css
+// (z-inspector … z-menu); floating roots carry data-layer so focus handling can tell them apart.
+export const LAYER = { inspector: 1, sheet: 2, popover: 3, picker: 4, menu: 5, tooltip: 6 };
+const layers = [];
+let layerSeq = 0;
+
+function onLayerKey(e) {
+  if (e.key !== 'Escape' || e.isComposing || !layers.length) return;
+  const top = layers.reduce((a, b) => (b.rank > a.rank || (b.rank === a.rank && b.seq > a.seq) ? b : a));
+  if (top.onEscape.current?.(e) === false) return; // it let the key through (the inspector while you type)
+  e.preventDefault();
+  e.stopPropagation();
+}
+
+/** While `open`, Escape calls `onEscape` if this is the topmost layer (return false to let the key through). */
+export function useLayer(open, rank, onEscape) {
+  const cb = useRef(onEscape);
+  useLayoutEffect(() => {
+    cb.current = onEscape;
+  });
+  useEffect(() => {
+    if (!open) return;
+    const layer = { rank, seq: ++layerSeq, onEscape: cb };
+    // A sheet or the palette opening (Ctrl+K with a popover open) closes whatever floats above
+    // that level first: it would otherwise sit on top of the modal and swallow its clicks.
+    if (rank === LAYER.sheet) for (const l of [...layers]) if (l.rank > LAYER.sheet) l.onEscape.current?.();
+    layers.push(layer);
+    if (layers.length === 1) window.addEventListener('keydown', onLayerKey, true);
+    return () => {
+      layers.splice(layers.indexOf(layer), 1);
+      if (!layers.length) window.removeEventListener('keydown', onLayerKey, true);
+    };
+  }, [open, rank]);
+}
+
+const TABBABLE = 'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]';
+/** What Tab can reach inside `root`, in order. */
+export function tabbables(root) {
+  return root ? [...root.querySelectorAll(TABBABLE)].filter((el) => el.tabIndex >= 0 && el.getClientRects().length > 0) : [];
+}
+
+function restoreFocus(opener, box) {
+  const a = document.activeElement;
+  if (opener && opener !== document.body && opener.isConnected && (!a || a === document.body || box.contains(a))) opener.focus({ preventScroll: true });
+}
+
+const modals = []; // open sheets and palettes, newest last
+
+/** Puts focus back into the topmost sheet or palette (after the control that had it went away, like Silence). */
+export function refocusModal() {
+  const box = modals[modals.length - 1];
+  if (box && !box.contains(document.activeElement)) box.focus({ preventScroll: true });
+}
+
+/**
+ * Focus for a modal (sheet, command palette). It moves in on open (to [data-autofocus], else the
+ * first control); while open, Tab cycles through the modal and the toast stack (so the alarm's
+ * Silence button stays reachable) and focus can't land behind it; on close it goes back to
+ * whatever had it before.
+ */
+export function useModalFocus(ref, open) {
+  useLayoutEffect(() => {
+    const box = ref.current;
+    if (!open || !box) return;
+    const opener = document.activeElement;
+    modals.push(box);
+    // The modal itself unless something asks for focus (the palette's search field): a sheet that
+    // opens by itself ("While you were away") shouldn't start with a focus ring on its first button.
+    // Tab from there goes to the first control.
+    if (!box.contains(document.activeElement)) (box.querySelector('[data-autofocus]') || box).focus({ preventScroll: true });
+    const top = () => modals[modals.length - 1] === box;
+    const onKey = (e) => {
+      if (e.key !== 'Tab' || !top()) return;
+      const active = document.activeElement;
+      // A popover or list opened from the modal looks after its own Tab.
+      if (active && !box.contains(active) && active.closest?.('[data-layer]')) return;
+      const list = [...tabbables(box), ...tabbables(document.querySelector('[data-toasts]'))];
+      e.preventDefault();
+      if (!list.length) return box.focus();
+      const i = list.indexOf(active);
+      list[i < 0 ? (e.shiftKey ? list.length - 1 : 0) : (i + (e.shiftKey ? -1 : 1) + list.length) % list.length].focus();
+    };
+    const onFocusIn = (e) => {
+      if (!top() || box.contains(e.target) || e.target.closest?.('[data-layer], [data-toasts]')) return;
+      (tabbables(box)[0] || box).focus({ preventScroll: true });
+    };
+    document.addEventListener('keydown', onKey, true);
+    document.addEventListener('focusin', onFocusIn, true);
+    return () => {
+      modals.splice(modals.indexOf(box), 1);
+      document.removeEventListener('keydown', onKey, true);
+      document.removeEventListener('focusin', onFocusIn, true);
+      restoreFocus(opener, box);
+    };
+  }, [open, ref]);
+}
+
+/**
+ * Focus for a floating panel (popover, date picker): it moves in on open (to [data-autofocus],
+ * else the panel itself, so Tab continues inside it) and back to the opener on close. Returns the
+ * panel's keydown handler: tabbing past either end closes the panel.
+ */
+export function useFloatingFocus(ref, open, onClose) {
+  useLayoutEffect(() => {
+    const box = ref.current;
+    if (!open || !box) return;
+    const opener = document.activeElement;
+    (box.querySelector('[data-autofocus]') || box).focus({ preventScroll: true });
+    return () => restoreFocus(opener, box);
+  }, [open, ref]);
+  return (e) => {
+    if (e.key !== 'Tab' || e.defaultPrevented) return;
+    const list = tabbables(ref.current);
+    const i = list.indexOf(document.activeElement);
+    if (!list.length || (e.shiftKey ? i <= 0 : i === list.length - 1)) {
+      e.preventDefault();
+      onClose();
+    }
+  };
+}
+
 // ── Overlays ─────────────────────────────────────────────────────────────────
 export function Sheet({ open, onClose, children, width = 720, className, label }) {
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e) => e.key === 'Escape' && onClose?.();
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
+  const box = useRef(null);
+  useLayer(open, LAYER.sheet, () => onClose?.());
+  useModalFocus(box, open);
   if (!open) return null;
   return createPortal(
-    <div className="fixed inset-0 z-50 grid place-items-center p-8 no-drag" role="dialog" aria-label={label} aria-modal="true">
+    <div className="fixed inset-0 z-sheet grid place-items-center p-8 no-drag" data-layer="sheet">
       <div className="absolute inset-0 animate-fade" style={{ background: 'var(--scrim)' }} onClick={onClose} />
-      <div className={cx('relative glass-strong rounded-[26px] animate-sheet max-h-full flex flex-col overflow-hidden', className)} style={{ width }}>
+      <div ref={box} role="dialog" aria-modal="true" aria-label={label} tabIndex={-1} className={cx('relative glass-strong rounded-[26px] animate-sheet max-h-full flex flex-col overflow-hidden outline-none', className)} style={{ width }}>
         {children}
       </div>
     </div>,
@@ -371,42 +515,52 @@ export function Sheet({ open, onClose, children, width = 720, className, label }
   );
 }
 
-export function Popover({ open, onClose, anchor, children, width = 380, align = 'end' }) {
+/** A floating panel under (or above) `anchor`. `role` and `label` describe the panel to screen readers (e.g. "dialog", "Alerts"). */
+export function Popover({ open, onClose, anchor, children, width = 380, align = 'end', role, label }) {
+  const panel = useRef(null);
   const [pos, setPos] = useState(null);
+  useLayer(open, LAYER.popover, () => onClose());
+  // Below the anchor, or above it when it doesn't fit below and there's more room above (the
+  // Export button at the bottom of a sheet). Measured before the first paint, so it never jumps.
   useLayoutEffect(() => {
-    if (!open || !anchor?.current) return;
-    const r = anchor.current.getBoundingClientRect();
-    const left = align === 'end' ? Math.max(8, r.right - width) : Math.min(window.innerWidth - width - 8, r.left);
-    setPos({ top: r.bottom + 8, left });
-  }, [open, anchor, width, align]);
-  useEffect(() => {
     if (!open) return;
-    const onKey = (e) => e.key === 'Escape' && onClose();
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
-  if (!open || !pos) return null;
+    const place = () => {
+      const a = anchor?.current?.getBoundingClientRect();
+      const p = panel.current;
+      if (!a || !p) return;
+      const w = Math.min(width, window.innerWidth - 16);
+      const left = align === 'end' ? Math.max(8, a.right - w) : Math.max(8, Math.min(window.innerWidth - w - 8, a.left));
+      const below = window.innerHeight - a.bottom - 20;
+      const above = a.top - 20;
+      const up = p.scrollHeight > below && above > below;
+      setPos(up ? { left, width: w, bottom: window.innerHeight - a.top + 8, maxHeight: above, up } : { left, width: w, top: a.bottom + 8, maxHeight: below });
+    };
+    place();
+    window.addEventListener('resize', place);
+    return () => {
+      window.removeEventListener('resize', place);
+      setPos(null);
+    };
+  }, [open, anchor, width, align]);
+  const onKeyDown = useFloatingFocus(panel, open, onClose);
+  if (!open) return null;
+  const side = align === 'end' ? 'right' : 'left';
   return createPortal(
-    <div className="fixed inset-0 z-40 no-drag" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="absolute glass-strong rounded-[20px] animate-sheet overflow-hidden flex flex-col" style={{ top: pos.top, left: pos.left, width: Math.min(width, window.innerWidth - 16), maxHeight: window.innerHeight - pos.top - 12, transformOrigin: align === 'end' ? 'top right' : 'top left' }}>
+    <div className="fixed inset-0 z-popover no-drag" data-layer="popover" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div
+        ref={panel}
+        role={role}
+        aria-label={label}
+        tabIndex={-1}
+        onKeyDown={onKeyDown}
+        className="absolute glass-strong rounded-[20px] animate-sheet overflow-hidden flex flex-col outline-none"
+        // Until measured (never painted: the layout effect places it first) it sits at the top left.
+        style={pos ? { top: pos.top, bottom: pos.bottom, left: pos.left, width: pos.width, maxHeight: pos.maxHeight, transformOrigin: `${pos.up ? 'bottom' : 'top'} ${side}` } : { top: 0, left: 0, width: Math.min(width, window.innerWidth - 16) }}
+      >
         {children}
       </div>
     </div>,
     document.body,
-  );
-}
-
-export function Disclosure({ title, children, defaultOpen = false, right }) {
-  const [open, setOpen] = useState(defaultOpen);
-  return (
-    <div>
-      <button type="button" onClick={() => setOpen(!open)} className="w-full flex items-center gap-1.5 py-1.5 text-headline font-semibold text-label-2 hover:text-label">
-        <Icon name="chevronRight" size={12} strokeWidth={2.2} style={{ transform: open ? 'rotate(90deg)' : 'none', transition: 'transform 320ms var(--ease-spring)' }} />
-        <span className="flex-1 text-left">{title}</span>
-        {right}
-      </button>
-      {open && <div className="animate-fade">{children}</div>}
-    </div>
   );
 }
 

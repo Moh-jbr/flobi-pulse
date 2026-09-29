@@ -12,7 +12,8 @@ export function classifyUptime(result) {
   return 'up';
 }
 
-export function checkUrl(url, { timeoutMs = 10_000 } = {}) {
+/** `ca` is only for tests (a local server with its own certificate). */
+export function checkUrl(url, { timeoutMs = 10_000, ca } = {}) {
   try {
     checkRequest({ method: 'GET', url });
   } catch (e) {
@@ -29,6 +30,7 @@ export function checkUrl(url, { timeoutMs = 10_000 } = {}) {
         path: u.pathname + u.search,
         agent: false, // fresh connection so latency includes TLS, like a real visitor
         headers: { 'user-agent': 'FlobiPulse/1.0 uptime', accept: '*/*', 'cache-control': 'no-cache' },
+        ...(ca ? { ca } : {}),
       },
       (res) => {
         let certDaysLeft = null;
@@ -37,25 +39,40 @@ export function checkUrl(url, { timeoutMs = 10_000 } = {}) {
           if (cert?.valid_to) certDaysLeft = Math.floor((Date.parse(cert.valid_to) - Date.now()) / 86_400_000);
         } catch {}
         let read = 0;
+        let enough = false; // stopped reading a big page on purpose
         res.on('data', (c) => {
           read += c.length;
-          if (read > 256 * 1024) res.destroy();
+          if (read > 256 * 1024 && !enough) {
+            enough = true;
+            res.destroy();
+          }
         });
-        const done = () => resolve({ status: res.statusCode, ms: Math.round(performance.now() - started), certDaysLeft, cfRay: res.headers['cf-ray'] || null });
+        const done = () => {
+          const result = { status: res.statusCode, ms: Math.round(performance.now() - started), certDaysLeft, cfRay: res.headers['cf-ray'] || null };
+          // The connection dropped before the whole answer arrived: that's not "up".
+          resolve(res.complete || enough ? result : { ...result, error: 'The response was cut off' });
+        };
         res.on('end', done);
         res.on('close', done);
       },
     );
     req.setTimeout(timeoutMs, () => req.destroy(new Error(`No response in ${timeoutMs / 1000}s`)));
-    req.on('error', (e) => resolve({ error: e.code === 'ENOTFOUND' ? 'DNS lookup failed' : e.message, ms: Math.round(performance.now() - started) }));
+    req.on('error', (e) => resolve({ error: e.code === 'ENOTFOUND' ? 'DNS lookup failed' : e.message, code: e.code, ms: Math.round(performance.now() - started) }));
     req.end();
   });
 }
 
 export class UptimeMonitor {
-  constructor({ targets = [], intervalMs = 30_000, onResult }) {
+  /**
+   * isOffline({ since }): resolves true when this computer is offline (net/connectivity.mjs). A
+   * check that got no answer at all only counts as the site being down once it's clear this
+   * computer is online; offline, it's reported as 'offline', which counts for nothing.
+   */
+  constructor({ targets = [], intervalMs = 30_000, onResult, isOffline = null, check = checkUrl }) {
     this.intervalMs = intervalMs;
     this.onResult = onResult;
+    this.isOffline = isOffline;
+    this.checkUrl = check;
     this.timer = null;
     this.setTargets(targets);
   }
@@ -68,12 +85,7 @@ export class UptimeMonitor {
     const tick = async () => {
       if (this.stopped) return;
       try {
-        await Promise.all(
-          this.targets.map(async (t) => {
-            const r = await checkUrl(t.url);
-            if (!this.stopped) this.onResult(t, { ...r, at: Date.now(), state: classifyUptime(r) });
-          }),
-        );
+        await this.round();
       } catch (e) {
         console.warn('[uptime]', e?.message);
       } finally {
@@ -83,6 +95,23 @@ export class UptimeMonitor {
     tick();
     return this;
   }
+
+  /**
+   * One check of every target. One that failed without a whole answer (none at all, or cut off):
+   * is it this computer that's offline? Only a look at the connection taken after the first such
+   * failure counts (the network may have gone mid-round).
+   */
+  async round() {
+    const results = await Promise.all(this.targets.map(async (t) => ({ t, r: await this.checkUrl(t.url), at: Date.now() })));
+    const failed = results.filter(({ r }) => r.error);
+    const offline = failed.length && this.isOffline ? await this.isOffline({ since: Math.min(...failed.map((x) => x.at)) }).catch(() => false) : false;
+    if (this.stopped) return;
+    for (const { t, r } of results) {
+      const away = offline && !!r.error;
+      this.onResult(t, { ...r, at: Date.now(), state: away ? 'offline' : classifyUptime(r), ...(away ? { error: 'This computer is offline' } : {}) });
+    }
+  }
+
   stop() {
     this.stopped = true;
     clearTimeout(this.timer);

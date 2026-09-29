@@ -1,12 +1,13 @@
 import { useRef, useState } from 'react';
 import { useStore, setState, navigate, invoke } from '../lib/store.js';
 import Icon from './icons.jsx';
-import { cx, IconButton, Popover, StatusDot, Button, SEV_TONE, Segmented, Empty, useWindowWidth, AlertText } from './ui.jsx';
-import { compact, ago, short } from '../lib/format.js';
+import { cx, IconButton, Popover, StatusDot, Segmented, Empty, useWindowWidth, AlertText } from './ui.jsx';
+import { compact, ago, short, duration } from '../lib/format.js';
+import { shortcut } from '../lib/platform.js';
 
 const TITLES = {
   overview: ['Overview', 'Every service, pod and endpoint at a glance'],
-  recent: ['Recent issues', 'Every alert from the last 7 days: what happened, what it affected and what to do'],
+  recent: ['Recent issues', 'Every alert and incident from the last 7 days: what happened, what it affected and what to do'],
   traffic: ['Live Traffic', 'Every request reaching the load balancer, as it happens'],
   errors: ['Errors', 'Backend errors from every pod, and frontend errors from Sentry'],
   crashes: ['Crashes & Down', "What's broken right now, and what crashed recently"],
@@ -17,6 +18,7 @@ const TITLES = {
   frontends: ['Frontends', 'Cloudflare edge, Pages deployments and uptime'],
   timeline: ['Timeline', 'Everything that happened, for any time range'],
   versions: ['Versions', 'Every release of the team’s repos, with its changelog'],
+  costs: ['Costs', 'What the platform costs each month: Google Cloud, Cloudflare, GitHub, the AI APIs, Sentry, Clerk and the rest'],
   settings: ['Settings', 'Account, integrations, notifications and appearance'],
 };
 
@@ -24,10 +26,10 @@ function LivePill() {
   const live = useStore((s) => s.sections.sources?.live);
   const rpm = useStore((s) => s.sections.traffic?.rpm);
   const st = live?.status;
-  const tone = st === 'streaming' ? 'green' : st === 'connecting' ? 'accent' : st === 'unavailable' ? 'orange' : 'red';
-  const label = st === 'streaming' ? 'Live' : st === 'connecting' ? 'Connecting' : st === 'unavailable' ? 'Live paused' : st ? 'Live error' : 'Waiting';
+  const tone = st === 'streaming' ? 'green' : st === 'connecting' ? 'accent' : st === 'offline' ? 'gray' : st === 'unavailable' ? 'orange' : 'red';
+  const label = st === 'streaming' ? 'Live' : st === 'connecting' ? 'Connecting' : st === 'offline' ? 'Offline' : st === 'unavailable' ? 'Live paused' : st ? 'Live error' : 'Waiting';
   return (
-    <button type="button" onClick={() => navigate('traffic')} title={live?.message || ''} className="no-drag press glass h-7 pl-2.5 pr-3 rounded-full inline-flex items-center gap-2 text-callout">
+    <button type="button" onClick={() => navigate('traffic')} title={live?.message || undefined} className="no-drag press glass h-7 pl-2.5 pr-3 rounded-full inline-flex items-center gap-2 text-callout">
       <StatusDot tone={tone} pulse={st === 'streaming'} size={7} />
       <span className="font-semibold">{label}</span>
       {st === 'streaming' && rpm != null && <span className="text-label-2 tabular">{compact(rpm)} req/min</span>}
@@ -64,6 +66,18 @@ function UpdateButton() {
   );
 }
 
+// How an alert's icon looks: resolved, clearing (the problem went away; it closes after a
+// hold, so it isn't an open problem any more) or open, by severity. Full class names, so
+// Tailwind sees every one of them.
+const ALERT_LOOK = {
+  resolved: { icon: 'check', bg: 'bg-green-tint', fg: 'text-green' },
+  clearing: { icon: 'check', bg: 'bg-fill-3', fg: 'text-label-3' },
+  critical: { icon: 'bolt', bg: 'bg-red-tint', fg: 'text-red' },
+  warning: { icon: 'errors', bg: 'bg-orange-tint', fg: 'text-orange' },
+  info: { icon: 'errors', bg: 'bg-accent-tint', fg: 'text-accent' },
+};
+const alertLook = (a) => ALERT_LOOK[a.resolvedAt ? 'resolved' : a.clearing ? 'clearing' : a.severity] || ALERT_LOOK.info;
+
 function AlertsButton() {
   const ref = useRef(null);
   const [open, setOpen] = useState(false);
@@ -71,55 +85,72 @@ function AlertsButton() {
   const alerts = useStore((s) => s.sections.alerts);
   const active = alerts?.active || [];
   const recent = alerts?.recent || [];
-  const unacked = active.filter((a) => !a.acked && !a.muted);
-  const list = tab === 'active' ? active : recent;
+  const problems = active.filter((a) => !a.clearing);
+  const unacked = problems.filter((a) => !a.acked && !a.muted);
+  // Open problems first, then the ones that are clearing.
+  const list = tab === 'active' ? [...problems, ...active.filter((a) => a.clearing)] : recent;
+  const go = (to) => {
+    setOpen(false);
+    navigate(to);
+  };
   return (
     <>
       <span ref={ref} className="inline-flex">
-        <IconButton icon="bell" label="Alerts" variant="glass" badge={unacked.filter((a) => a.severity === 'critical').length || unacked.length} onClick={() => setOpen(!open)} />
+        <IconButton icon="bell" label="Alerts" variant="glass" badge={unacked.filter((a) => a.severity === 'critical').length || unacked.length} onClick={() => setOpen(!open)} aria-haspopup="dialog" aria-expanded={open} />
       </span>
-      <Popover open={open} onClose={() => setOpen(false)} anchor={ref} width={420}>
+      <Popover open={open} onClose={() => setOpen(false)} anchor={ref} width={420} role="dialog" label="Alerts">
         <div className="px-4 pt-3.5 pb-2.5 flex items-center justify-between">
           <div className="flex items-baseline gap-2">
             <div className="text-title3 font-semibold">Alerts</div>
-            <button type="button" className="text-callout text-accent" onClick={() => (setOpen(false), navigate('recent'))}>
+            <button type="button" className="text-callout text-accent" onClick={() => go({ to: 'alerts' })}>
               See all
             </button>
           </div>
           <Segmented
             size="sm"
+            label="Show"
             value={tab}
             onChange={setTab}
             options={[
-              { value: 'active', label: 'Active', count: active.length },
+              { value: 'active', label: 'Active', count: problems.length },
               { value: 'resolved', label: 'Resolved', count: recent.length },
             ]}
           />
         </div>
         <div className="max-h-[460px] min-h-0 flex-1 overflow-y-auto px-2 pb-2">
           {!list.length && <Empty title={tab === 'active' ? 'No active alerts' : 'Nothing resolved in the last 24h'} message={tab === 'active' ? 'Everything is behaving.' : null} />}
-          {list.map((a) => (
-            <div key={a.id} className={cx('group p-2.5 rounded-[14px] hover:bg-fill-4 flex gap-2.5', (a.acked || a.muted) && 'opacity-60')}>
-              <div className={cx('mt-0.5 w-6 h-6 rounded-full grid place-items-center shrink-0', a.resolvedAt ? 'bg-green-tint' : a.severity === 'critical' ? 'bg-red-tint' : a.severity === 'warning' ? 'bg-orange-tint' : 'bg-accent-tint')}>
-                <Icon name={a.resolvedAt ? 'check' : a.severity === 'critical' ? 'bolt' : 'errors'} size={13} strokeWidth={2} className={a.resolvedAt ? 'text-green' : `text-${SEV_TONE[a.severity]}`} />
+          {list.map((a) => {
+            const look = alertLook(a);
+            return (
+              <div key={a.id} className={cx('group p-2.5 rounded-[14px] hover:bg-fill-4 flex gap-2.5', (a.acked || a.muted || a.clearing) && 'opacity-60')}>
+                <div className={cx('mt-0.5 w-6 h-6 rounded-full grid place-items-center shrink-0', look.bg)}>
+                  <Icon name={look.icon} size={13} strokeWidth={2} className={look.fg} />
+                </div>
+                <button type="button" className="min-w-0 flex-1 text-left" onClick={() => go(a.view || { to: 'alerts' })}>
+                  <AlertText a={a} compact />
+                  <div className="text-subheadline text-label-3 mt-1">
+                    {a.clearing && <span className="mr-1.5 px-1.5 rounded-[5px] bg-fill-3 text-label-2 font-medium">Recovering</span>}
+                    {!a.resolvedAt && (a.acked || a.silenced) && (
+                      <span title="No notifications or sound until it’s been fixed for 30 min" className="mr-1.5 px-1.5 rounded-[5px] bg-fill-3 text-label-2 font-medium">
+                        Silenced
+                      </span>
+                    )}
+                    {a.resolvedAt ? `Resolved ${ago(a.resolvedAt)} · lasted ${duration(Math.max(0, a.resolvedAt - a.openedAt))}` : `Since ${ago(a.openedAt)}`}
+                    {a.count > 1 ? ` · ${a.count}×` : ''}
+                    {a.muted ? ' · muted' : ''}
+                    {a.resolvedAt && (a.acked || a.silenced) ? ' · silenced' : ''}
+                  </div>
+                </button>
+                {!a.resolvedAt && (
+                  // Shown on hover, and whenever keyboard focus is in the row.
+                  <div className="flex flex-col gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
+                    {!a.acked && !a.clearing && <IconButton icon="check" size={24} iconSize={13} label="Silence until it’s fixed" onClick={() => invoke('alerts:ack', { id: a.id })} />}
+                    <IconButton icon="mute" size={24} iconSize={13} label={a.service ? `Mute ${short(a.service)} for 1 hour` : 'Mute this alert for 1 hour'} onClick={() => invoke('alerts:mute', { target: a.muteTarget ?? a.service, minutes: 60 })} />
+                  </div>
+                )}
               </div>
-              <button type="button" className="min-w-0 flex-1 text-left" onClick={() => (setOpen(false), navigate(a.view || { to: 'crashes' }))}>
-                <AlertText a={a} compact />
-                <div className="text-subheadline text-label-3 mt-1">
-                  {a.resolvedAt ? `Resolved ${ago(a.resolvedAt)} · lasted ${Math.max(1, Math.round((a.resolvedAt - a.openedAt) / 60000))}m` : `Since ${ago(a.openedAt)}`}
-                  {a.count > 1 ? ` · ${a.count}×` : ''}
-                  {a.muted ? ' · muted' : ''}
-                  {a.acked ? ' · acknowledged' : ''}
-                </div>
-              </button>
-              {!a.resolvedAt && (
-                <div className="flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                  {!a.acked && <IconButton icon="check" size={24} iconSize={13} label="Acknowledge" onClick={() => invoke('alerts:ack', { id: a.id })} />}
-                  {a.service && <IconButton icon="mute" size={24} iconSize={13} label={`Mute ${short(a.service)} for 1 hour`} onClick={() => invoke('alerts:mute', { service: a.service, minutes: 60 })} />}
-                </div>
-              )}
-            </div>
-          ))}
+            );
+          })}
         </div>
       </Popover>
     </>
@@ -156,7 +187,7 @@ export default function Toolbar() {
         <button type="button" onClick={() => setState({ palette: true })} className="no-drag press glass h-7 pl-2.5 pr-2 rounded-full inline-flex items-center gap-2 text-callout text-label-2 hover:text-label">
           <Icon name="search" size={14} />
           <span>Search</span>
-          <span className="text-footnote text-label-3 font-medium">{navigator.platform.includes('Mac') ? '⌘K' : 'Ctrl K'}</span>
+          <span className="text-footnote text-label-3 font-medium">{shortcut('K')}</span>
         </button>
         <IconButton icon="timeline" label="While you were away" variant="glass" onClick={() => setState({ recapOpen: true })} />
         <AlertsButton />
@@ -178,5 +209,3 @@ export function ViewScroll({ children, className, inner }) {
 export function ViewFixed({ children, className }) {
   return <div className={cx('absolute inset-0 flex flex-col pt-[56px]', className)}>{children}</div>;
 }
-
-export { Button };

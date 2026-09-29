@@ -145,6 +145,16 @@ export class Reader {
   }
 }
 
+/**
+ * Stores a decoded Struct/map key. Keys come from whatever got logged, and a plain
+ * `obj['__proto__'] = v` would replace the object's prototype instead of adding a
+ * key, so that one is defined as an own property (what JSON.parse does too).
+ */
+function setKey(obj, key, value) {
+  if (key === '__proto__') Object.defineProperty(obj, key, { value, writable: true, enumerable: true, configurable: true });
+  else obj[key] = value;
+}
+
 // ── google.protobuf.* ────────────────────────────────────────────────────────
 export function decodeTimestamp(r) {
   let seconds = 0;
@@ -211,7 +221,7 @@ export function decodeStruct(r) {
         else if (t.field === 2 && t.wire === 2) val = decodeValue(entry.sub());
         else entry.skip(t.wire);
       }
-      out[key] = val;
+      setKey(out, key, val);
     } else r.skip(wire);
   }
   return out;
@@ -247,7 +257,7 @@ function decodeMonitoredResource(r) {
     if (field === 1 && wire === 2) res.type = r.string();
     else if (field === 2 && wire === 2) {
       const [k, v] = decodeStringMapEntry(r.sub());
-      res.labels[k] = v;
+      setKey(res.labels, k, v);
     } else r.skip(wire);
   }
   return res;
@@ -293,8 +303,11 @@ export const SEVERITY = {
 };
 
 // ── google.logging.v2.LogEntry ───────────────────────────────────────────────
-// Produces the same shape as the REST JSON representation (camelCase), so the
-// rest of the app handles tailed and listed entries identically.
+// Uses the REST JSON field names (camelCase), but the shape is NOT the same as a
+// listed (history) entry: times are numbers (timestampMs, receiveTimestampMs)
+// instead of RFC 3339 strings, httpRequest has latencySeconds (a number) instead
+// of latency ("0.25s"), sizes are numbers instead of int64 strings, and
+// protoPayload is only a stub ({ '@type' }). normalize.mjs reads both shapes.
 export function decodeLogEntry(r) {
   const e = { labels: {} };
   while (!r.eof()) {
@@ -310,7 +323,7 @@ export function decodeLogEntry(r) {
       case 10: e.severity = SEVERITY[r.varint()] || 'DEFAULT'; break;
       case 11: {
         const [k, v] = decodeStringMapEntry(r.sub());
-        e.labels[k] = v;
+        setKey(e.labels, k, v);
         break;
       }
       case 12: e.logName = r.string(); break;

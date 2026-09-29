@@ -1,6 +1,6 @@
 // Sentry (read-only): frontend issues from the React apps.
 // Token needs only read scopes: org:read, project:read, event:read.
-import { json } from '../net/http.mjs';
+import { json, redact } from '../net/http.mjs';
 import { configureGuard } from '../net/guard.mjs';
 
 export const SENTRY_SAAS_HOSTS = ['sentry.io', 'de.sentry.io', 'us.sentry.io'];
@@ -34,10 +34,12 @@ export function explainSentryError(e, org) {
 }
 
 export class SentryClient {
-  constructor({ host = 'sentry.io', org, token }) {
+  /** `request` is only replaced by tests. */
+  constructor({ host = 'sentry.io', org, token, request = json }) {
     this.host = String(host || 'sentry.io').replace(/^https?:\/\//, '').replace(/\/.*$/, '');
     this.org = org;
     this.token = cleanSentryToken(token);
+    this.request = request;
     if (org && !/^[A-Za-z0-9_-]+$/.test(org)) throw new Error('The Sentry organization slug can only contain letters, numbers, - and _.');
     configureGuard({ sentryHost: this.host });
   }
@@ -46,12 +48,18 @@ export class SentryClient {
     return !!(this.org && this.token);
   }
 
-  _get(path) {
-    return json({
-      url: `https://${this.host}/api/0${path}`,
-      headers: { authorization: `Bearer ${this.token}` },
-      timeoutMs: 30_000,
-    });
+  async _get(path) {
+    try {
+      return await this.request({
+        url: `https://${this.host}/api/0${path}`,
+        headers: { authorization: `Bearer ${this.token}` },
+        timeoutMs: 30_000,
+      });
+    } catch (e) {
+      // Error messages end up on screen: never with the token in them.
+      if (e && typeof e.message === 'string') e.message = redact(e.message, this.token);
+      throw e;
+    }
   }
 
   async verify() {
