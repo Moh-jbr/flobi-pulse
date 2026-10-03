@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useStore, inspect, navigate } from '../lib/store.js';
 import { ViewScroll } from '../components/Toolbar.jsx';
-import { Card, SectionTitle, Segmented, HealthPill, StatusDot, Meter, cx, STATE_TONE, SEV_TONE, useNow, Empty } from '../components/ui.jsx';
+import { Card, SectionTitle, Segmented, HealthPill, StatusDot, cx, STATE_TONE, SEV_TONE, useNow, Empty } from '../components/ui.jsx';
 import { Sparkline, UptimeBars } from '../components/charts.jsx';
 import Icon from '../components/icons.jsx';
 import { compact, pct, ms, ago, short, num } from '../lib/format.js';
@@ -65,15 +65,25 @@ function usageOf(s, metricsSource) {
   return { cpu, mem, cpuTitle: title(s.cpuPct, cpu, 'CPU'), memTitle: title(s.memPct, mem, 'Memory') };
 }
 
+/**
+ * A service at a glance: its CPU large, memory beside it, the last hour of CPU
+ * along the bottom edge, then traffic or what is wrong. When the card is orange
+ * or red, the figures that made it so (CPU, memory, pods, restarts) take its
+ * colour; the rest stay quiet.
+ */
 function ServiceCard({ s, metricsSource }) {
   const problem = s.health === 'down' || s.health === 'degraded';
   const u = usageOf(s, metricsSource);
+  const tone = s.health === 'down' ? 'text-red' : 'text-orange';
+  const caused = (k) => problem && s.causes?.includes(k) && tone;
+  const spark = s.cpuSpark;
+  const sparkMax = spark ? (spark.unit === 'pct' ? Math.max(0.1, ...spark.points) * 1.15 : Math.max(...spark.points, 1e-6) * 1.15) : undefined;
   return (
     <button
       type="button"
       onClick={() => inspect('service', s.name)}
       className={cx(
-        'card press p-3.5 text-left flex flex-col gap-2.5 min-w-0 transition-shadow',
+        'card press px-3.5 pt-3.5 text-left flex flex-col min-w-0 overflow-hidden transition-shadow',
         s.health === 'down' && 'shadow-[0_0_0_1.5px_var(--red),var(--shadow-card)]',
         s.health === 'degraded' && 'shadow-[0_0_0_1px_color-mix(in_srgb,var(--orange)_60%,transparent),var(--shadow-card)]',
       )}
@@ -92,39 +102,42 @@ function ServiceCard({ s, metricsSource }) {
           )}
         </span>
       </div>
-      <div className="flex items-center gap-1 flex-wrap min-h-2">
-        {s.pods.map((p) => (
-          <span key={p.name} title={`${p.name} · ${p.status}`} className={cx('w-2 h-2 rounded-full', { green: 'bg-green', orange: 'bg-orange', red: 'bg-red', accent: 'bg-accent', gray: 'bg-gray' }[STATE_TONE[p.state]])} />
-        ))}
-        <span className="text-subheadline text-label-3 ml-1 tabular">
-          {s.ready}/{s.desired} ready
-          {s.scaling ? ` · ${s.scaling.min}–${s.scaling.max}` : ''}
+      <div className="flex items-end gap-3 mt-2 min-w-0">
+        <span title={u.cpuTitle} className="flex items-baseline gap-1">
+          <span className={cx('font-mono text-[20px] leading-6 font-medium tracking-[-0.02em] tabular', u.cpu == null ? 'text-label-3' : caused('cpu') || 'text-label')}>{u.cpu != null ? pct(u.cpu) : '—'}</span>
+          <span className="text-footnote text-label-3">CPU</span>
+        </span>
+        <span title={u.memTitle} className="flex items-baseline gap-1 pb-px">
+          <span className={cx('font-mono text-subheadline tabular', u.mem == null ? 'text-label-3' : caused('mem') ? cx(caused('mem'), 'font-medium') : 'text-label-2')}>{u.mem != null ? pct(u.mem) : '—'}</span>
+          <span className="text-footnote text-label-3">mem</span>
+        </span>
+        <span className="ml-auto flex items-center gap-1 pb-1 min-w-0" title={s.pods.map((p) => `${p.name} · ${p.status}`).join('\n')}>
+          {s.pods.slice(0, 6).map((p) => (
+            <span key={p.name} className={cx('w-1.5 h-1.5 rounded-full shrink-0', { green: 'bg-green', orange: 'bg-orange', red: 'bg-red', accent: 'bg-accent', gray: 'bg-gray' }[STATE_TONE[p.state]])} />
+          ))}
+          <span className={cx('text-footnote tabular ml-0.5 whitespace-nowrap', caused('pods') ? cx(caused('pods'), 'font-medium') : 'text-label-3')}>
+            {s.ready}/{s.desired}
+            {s.scaling ? ` · ${s.scaling.min}–${s.scaling.max}` : ''}
+          </span>
         </span>
       </div>
-      {problem && s.reasons?.[0] ? (
-        <div className={cx('text-callout leading-4 line-clamp-2', s.health === 'down' ? 'text-red' : 'text-orange')}>{s.reasons.join(' · ')}</div>
-      ) : (
-        <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-subheadline">
-          <div title={u.cpuTitle}>
-            <div className="flex justify-between text-label-3 mb-1">
-              <span>CPU</span>
-              <span className="tabular">{u.cpu != null ? pct(u.cpu) : '—'}</span>
-            </div>
-            <Meter value={u.cpu} />
-          </div>
-          <div title={u.memTitle}>
-            <div className="flex justify-between text-label-3 mb-1">
-              <span>Memory</span>
-              <span className="tabular">{u.mem != null ? pct(u.mem) : '—'}</span>
-            </div>
-            <Meter value={u.mem} />
-          </div>
-        </div>
-      )}
-      <div className="flex items-center gap-3 text-subheadline text-label-2 tabular">
-        {s.rpm != null && s.hosts?.length > 0 && <span>{compact(s.rpm)} req/min</span>}
-        <span className={cx(s.errorsPerMin >= 5 && 'text-orange')}>{s.errorsPerMin ? `${s.errorsPerMin < 1 ? s.errorsPerMin.toFixed(1) : Math.round(s.errorsPerMin)} err/min` : 'no errors'}</span>
-        {s.restarts > 0 && <span className={cx(s.recentRestarts > 0 && 'text-orange')}>{s.restarts} restarts</span>}
+      <div className="-mx-3.5 mt-2" title={spark ? `CPU over the last hour while the app was open${spark.unit === 'cores' ? ', in cores (no limit or request set)' : ''}` : u.cpuTitle}>
+        {spark ? (
+          <Sparkline fluid dot={false} data={spark.points} max={sparkMax} height={34} strokeWidth={1.25} color={caused('cpu') ? `var(--${s.health === 'down' ? 'red' : 'orange'})` : 'var(--label-3)'} />
+        ) : (
+          <div className="h-[34px] shadow-[inset_0_-1px_0_var(--line)]" />
+        )}
+      </div>
+      <div className="flex items-center gap-3 py-2 text-subheadline text-label-2 tabular shadow-[inset_0_1px_0_var(--line)] -mx-3.5 px-3.5 min-w-0">
+        {problem && s.reasons?.[0] ? (
+          <span className={cx('truncate', tone)} title={s.reasons.join('\n')}>{s.reasons.join(' · ')}</span>
+        ) : (
+          <>
+            {s.rpm != null && s.hosts?.length > 0 && <span>{compact(s.rpm)} req/min</span>}
+            <span className={cx(s.errorsPerMin >= 5 && 'text-orange')}>{s.errorsPerMin ? `${s.errorsPerMin < 1 ? s.errorsPerMin.toFixed(1) : Math.round(s.errorsPerMin)} err/min` : 'no errors'}</span>
+            {s.restarts > 0 && <span className={cx(s.recentRestarts > 0 && 'text-orange')}>{s.restarts} restarts</span>}
+          </>
+        )}
       </div>
     </button>
   );
@@ -232,7 +245,7 @@ export default function Overview() {
           {!services.length ? (
             <div className="grid grid-cols-[repeat(auto-fill,minmax(250px,1fr))] gap-3">
               {Array.from({ length: 9 }, (_, i) => (
-                <div key={i} className="card p-3.5 h-[132px]">
+                <div key={i} className="card p-3.5 h-[150px]">
                   <div className="skeleton h-4 w-24" />
                   <div className="skeleton h-3 w-32 mt-3" />
                   <div className="skeleton h-2 w-full mt-6" />

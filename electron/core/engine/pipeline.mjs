@@ -58,6 +58,7 @@ export class Pipeline {
     this.sqlSeenInLogs = new Set(); // Cloud SQL connection names seen in Postgres logs
     this.dbConnIssues = []; // app log lines that look like "can't reach the database"
     this.usageHistory = new Map();
+    this.serviceCpu = new Map(); // service → { unit: 'pct' | 'cores', points: [{ t, v }] }, the last hour
     this.billingStorage = null; // the Costs page's billing export vs BigQuery's free storage (setBillingStorage)
     this._billingStorageKey = null;
     this.billingCredits = []; // prepaid balances below their alert amount (setBillingCredits)
@@ -175,7 +176,48 @@ export class Pipeline {
       while (h.points.length && t - h.points[0].t > 60 * MIN) h.points.shift();
     }
     for (const [name, h] of this.usageHistory) if (!h.points.length || t - h.points[h.points.length - 1].t > 60 * MIN) this.usageHistory.delete(name);
+    this._trackServiceCpu(pods, t);
     this.scheduleRebuild();
+  }
+
+  /**
+   * One CPU point per service per metrics poll, for the Overview cards' last-hour
+   * line: the pods' usage summed against their limits summed (requests where a pod
+   * has no limit), so it reads as the same kind of % as the card's number. A
+   * service whose pods set neither keeps its usage in cores and says so.
+   */
+  _trackServiceCpu(podMetrics, t) {
+    const pods = new Map(this.model.pods.map((p) => [p.name, p]));
+    const sums = new Map();
+    for (const m of podMetrics) {
+      const pod = pods.get(m.metadata?.name);
+      if (!pod?.service || pod.terminal) continue;
+      let used = 0;
+      for (const c of m.containers || []) used += cpuMilli(c.usage?.cpu);
+      const x = sums.get(pod.service) || { used: 0, cap: 0, uncapped: false };
+      const cap = pod.cpuLimit || pod.cpuRequest;
+      x.used += used;
+      if (cap) x.cap += cap;
+      else x.uncapped = true;
+      sums.set(pod.service, x);
+    }
+    for (const [service, x] of sums) {
+      const unit = x.cap && !x.uncapped ? 'pct' : 'cores';
+      let h = this.serviceCpu.get(service);
+      if (!h || h.unit !== unit) this.serviceCpu.set(service, (h = { unit, points: [] }));
+      h.points.push({ t, v: unit === 'pct' ? x.used / x.cap : x.used / 1000 });
+      while (h.points.length && t - h.points[0].t > 60 * MIN) h.points.shift();
+    }
+    for (const [service, h] of this.serviceCpu) if (!sums.has(service) && (!h.points.length || t - h.points[h.points.length - 1].t > 60 * MIN)) this.serviceCpu.delete(service);
+  }
+
+  /** A service's last-hour CPU line, at most `n` points (the newest kept), or null with fewer than two. */
+  cpuSpark(service, n = 60) {
+    const h = this.serviceCpu.get(service);
+    if (!h || h.points.length < 2) return null;
+    const step = Math.max(1, Math.ceil(h.points.length / n));
+    const pts = h.points.filter((_, i) => (h.points.length - 1 - i) % step === 0).map((p) => p.v);
+    return { unit: h.unit, points: pts };
   }
 
   /** CPU (cores) / memory (bytes) per pod of a service, collected while the app is open. */
@@ -744,6 +786,7 @@ export class Pipeline {
             errorsPerMin: this.errors.ratePerMinute(s.name, 5, now),
             requestSpark: hist.spark[s.name]?.length > 1 ? hist.spark[s.name] : null,
             errorSpark: errSpark.length > 1 ? errSpark : null,
+            cpuSpark: this.cpuSpark(s.name),
           };
         });
       }
