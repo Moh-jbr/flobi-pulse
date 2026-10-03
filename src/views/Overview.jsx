@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useStore, inspect, navigate } from '../lib/store.js';
 import { ViewScroll } from '../components/Toolbar.jsx';
 import { Card, SectionTitle, Segmented, HealthPill, StatusDot, cx, STATE_TONE, SEV_TONE, useNow, Empty } from '../components/ui.jsx';
@@ -98,6 +98,8 @@ function linePaths(times, values, x, y) {
  */
 function UsageLine({ cpu, mem, deploys, max, color, memColor }) {
   const [at, setAt] = useState(null); // a moment, ms
+  const boxRef = useRef(null);
+  const tipRef = useRef(null);
   const ends = [cpu?.times, mem?.times].filter((t) => t?.length);
   const until = Math.max(...ends.map((t) => t[t.length - 1]));
   const since = Math.max(until - 60 * 60_000, Math.min(...ends.map((t) => t[0])));
@@ -121,10 +123,19 @@ function UsageLine({ cpu, mem, deploys, max, color, memColor }) {
     setAt(since + Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * span);
   };
   const ax = at != null ? x(at) : 0;
+  // The label sits centred on the pointer, but never past either edge of the card (which clips it).
+  useLayoutEffect(() => {
+    const box = boxRef.current;
+    const tip = tipRef.current;
+    if (!box || !tip) return;
+    const w = box.clientWidth;
+    const tw = tip.offsetWidth;
+    tip.style.left = `${Math.max(6, Math.min(w - tw - 6, (ax / 100) * w - tw / 2))}px`;
+  });
   const cpuText = ci != null ? (cpu.unit === 'pct' ? `${pct(cpu.points[ci])} CPU` : `${cpu.points[ci].toFixed(2)} cores`) : null;
   const memText = mi != null ? `${pct(mem.points[mi])} mem` : null;
   return (
-    <div className="relative" style={{ height: H }} onMouseMove={onMove} onMouseLeave={() => setAt(null)}>
+    <div ref={boxRef} className="relative" style={{ height: H }} onMouseMove={onMove} onMouseLeave={() => setAt(null)}>
       <svg viewBox={`0 0 100 ${H}`} preserveAspectRatio="none" className="absolute inset-0 w-full h-full overflow-visible" aria-hidden="true">
         {cpuPaths && <path d={cpuPaths.area} fill={color} opacity="0.1" />}
         {memPaths && <path d={memPaths.line} fill="none" stroke={memColor} strokeWidth="1.25" strokeDasharray="3 2.5" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />}
@@ -140,8 +151,8 @@ function UsageLine({ cpu, mem, deploys, max, color, memColor }) {
         <>
           <span className="absolute top-0 bottom-0 w-px bg-[var(--line-strong)] pointer-events-none" style={{ left: `${ax}%` }} />
           <span
-            className="absolute top-0.5 mx-1.5 px-1.5 py-px rounded-[6px] bg-[var(--bg-elevated)] shadow-[inset_0_0_0_1px_var(--line-strong)] text-footnote tabular whitespace-nowrap pointer-events-none"
-            style={ax > 45 ? { right: `${100 - ax}%` } : { left: `${ax}%` }}
+            ref={tipRef}
+            className="absolute top-0.5 px-1.5 py-px rounded-[6px] bg-[var(--bg-elevated)] shadow-[inset_0_0_0_1px_var(--line-strong)] text-footnote tabular whitespace-nowrap pointer-events-none"
           >
             {deploy ? (
               <span className="text-accent font-medium">Deployed {clockHM(deploy)}</span>
