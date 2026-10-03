@@ -44,7 +44,11 @@ process.on('unhandledRejection', (e) => console.error('[main] unhandled rejectio
 // so they no longer matched the content; on Windows it also made scrolling laggy.
 
 app.setName('Flobi Pulse');
-if (isWin) app.setAppUserModelId('ai.flobi.pulse');
+// Run from source, the app takes an id of its own: sharing the installed app's id
+// made Windows show the installed copy's taskbar icon (and its cached old one)
+// instead of the icon this checkout carries.
+const APP_ID = app.isPackaged ? 'ai.flobi.pulse' : 'ai.flobi.pulse.dev';
+if (isWin) app.setAppUserModelId(APP_ID);
 if (!app.requestSingleInstanceLock()) {
   app.quit();
   process.exit(0);
@@ -332,7 +336,7 @@ function createWindow() {
   // its name and icon from its Start menu shortcut; this gives the dev window the same.
   if (isWin && !app.isPackaged) {
     win.setAppDetails({
-      appId: 'ai.flobi.pulse',
+      appId: APP_ID,
       appIconPath: path.join(__dirname, 'assets', 'icon.ico'),
       relaunchCommand: `"${process.execPath}" "${app.getAppPath()}"`,
       relaunchDisplayName: 'Flobi Pulse',

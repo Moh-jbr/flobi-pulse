@@ -65,6 +65,37 @@ function usageOf(s, metricsSource) {
   return { cpu, mem, cpuTitle: title(s.cpuPct, cpu, 'CPU'), memTitle: title(s.memPct, mem, 'Memory') };
 }
 
+/** A card's last-hour CPU line; pointing at it says what CPU was at that moment. */
+function CpuLine({ spark, max, color }) {
+  const [at, setAt] = useState(null);
+  const n = spark.points.length;
+  const onMove = (e) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    setAt(Math.max(0, Math.min(n - 1, Math.round(((e.clientX - r.left) / r.width) * (n - 1)))));
+  };
+  const v = at != null ? spark.points[at] : null;
+  const x = at != null ? (at / (n - 1)) * 100 : 0;
+  const y = v != null ? 34 - 1.25 - (Math.min(v, max) / max) * (34 - 2.5) : 0;
+  return (
+    <div className="relative" onMouseMove={onMove} onMouseLeave={() => setAt(null)}>
+      <Sparkline fluid dot={false} data={spark.points} max={max} height={34} strokeWidth={1.25} color={color} />
+      {at != null && (
+        <>
+          <span className="absolute top-0 bottom-0 w-px bg-[var(--line-strong)] pointer-events-none" style={{ left: `${x}%` }} />
+          <span className="absolute w-[7px] h-[7px] -ml-[3.5px] -mt-[3.5px] rounded-full pointer-events-none shadow-[0_0_0_2px_var(--bg-elevated)]" style={{ left: `${x}%`, top: y, background: color === 'var(--label-3)' ? 'var(--label)' : color }} />
+          <span
+            className="absolute top-0.5 mx-1.5 px-1.5 py-px rounded-[6px] bg-[var(--bg-elevated)] shadow-[inset_0_0_0_1px_var(--line-strong)] text-footnote tabular whitespace-nowrap pointer-events-none"
+            style={x > 70 ? { right: `${100 - x}%` } : { left: `${x}%` }}
+          >
+            <span className="font-mono text-label">{spark.unit === 'pct' ? pct(v) : `${v.toFixed(2)} cores`}</span>
+            <span className="text-label-3"> · {ago(spark.times?.[at])}</span>
+          </span>
+        </>
+      )}
+    </div>
+  );
+}
+
 /**
  * A service at a glance: its CPU large, memory beside it, the last hour of CPU
  * along the bottom edge, then traffic or what is wrong. When the card is orange
@@ -114,9 +145,9 @@ function ServiceCard({ s, metricsSource }) {
           </span>
         </span>
       </div>
-      <div className="-mx-3.5 mt-2" title={spark ? `CPU over the last hour while the app was open${spark.unit === 'cores' ? ', in cores (no limit or request set)' : ''}` : u.cpuTitle}>
+      <div className="-mx-3.5 mt-2" title={spark ? undefined : u.cpuTitle}>
         {spark ? (
-          <Sparkline fluid dot={false} data={spark.points} max={sparkMax} height={34} strokeWidth={1.25} color={caused('cpu') ? `var(--${s.health === 'down' ? 'red' : 'orange'})` : 'var(--label-3)'} />
+          <CpuLine spark={spark} max={sparkMax} color={caused('cpu') ? `var(--${s.health === 'down' ? 'red' : 'orange'})` : 'var(--label-3)'} />
         ) : (
           <div className="h-[34px] shadow-[inset_0_-1px_0_var(--line)]" />
         )}

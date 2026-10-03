@@ -216,8 +216,8 @@ export class Pipeline {
     const h = this.serviceCpu.get(service);
     if (!h || h.points.length < 2) return null;
     const step = Math.max(1, Math.ceil(h.points.length / n));
-    const pts = h.points.filter((_, i) => (h.points.length - 1 - i) % step === 0).map((p) => p.v);
-    return { unit: h.unit, points: pts };
+    const kept = h.points.filter((_, i) => (h.points.length - 1 - i) % step === 0);
+    return { unit: h.unit, points: kept.map((p) => p.v), times: kept.map((p) => p.t) };
   }
 
   /** CPU (cores) / memory (bytes) per pod of a service, collected while the app is open. */

@@ -655,9 +655,12 @@ export class DemoConnector {
       ['Flow', 'https://flow.flobi.ai/', 'frontend', 120],
       ['Drive', 'https://drive.flobi.ai/', 'frontend', 105],
       ['Brands', 'https://brands.flobi.ai/', 'frontend', 115],
-      ['Notes', 'https://notes.flobi.ai/', 'frontend', 100],
+      ['Notes', 'https://docs.flobi.ai/', 'frontend', 100],
       ['Market', 'https://market.flobi.ai/', 'frontend', 130],
       ['Handoff', 'https://handoff.flobi.ai/', 'frontend', 3400],
+      ['Artwork', 'https://artwork.flobi.ai/', 'frontend', 125],
+      ['Projects', 'https://projects.flobi.ai/', 'frontend', 100],
+      ['Admin', 'https://admin.flobi.ai/', 'frontend', 95],
     ];
     if (!this.uptimeInit) {
       this.uptimeInit = true;
