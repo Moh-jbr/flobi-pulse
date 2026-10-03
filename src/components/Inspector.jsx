@@ -42,7 +42,7 @@ function LogBlock({ lines, loading, empty = 'No log lines.' }) {
     );
   if (!lines?.length) return <div className="text-callout text-label-2">{empty}</div>;
   return (
-    <div className="rounded-[8px] bg-[var(--code-bg)] max-h-[340px] overflow-auto py-1.5 font-mono text-[11px] leading-[15px] selectable">
+    <div className="code-box max-h-[340px] overflow-auto py-1.5 font-mono text-[11px] leading-[15px] selectable">
       {lines.map((l, i) => (
         <div key={l.id || i} className={cx('px-3 py-[1px] whitespace-pre-wrap break-words', l.level === 'ERROR' && 'text-red', l.level === 'WARN' && 'text-orange')}>
           <span className="text-label-3 mr-2">{clockHMS(l.ts)}</span>
@@ -370,14 +370,14 @@ function RequestLogLines({ lines, r }) {
   for (const l of lines) {
     if (!marked && l.ts > r.ts) (marked = true), rows.push(marker);
     rows.push(
-      <div key={l.id} className={cx('px-3 py-[1px] whitespace-pre-wrap break-words', l.level === 'ERROR' && 'text-red', l.level === 'WARN' && 'text-orange', path.length > 1 && l.text.includes(path) && 'font-semibold')}>
+      <div key={l.id} className={cx('px-3 py-1 whitespace-pre-wrap break-words not-first:shadow-[inset_0_1px_0_var(--line)]', l.level === 'ERROR' && 'text-red', l.level === 'WARN' && 'text-orange', path.length > 1 && l.text.includes(path) && 'font-semibold')}>
         <span className="text-label-3 mr-2">{clockMs(l.ts)}</span>
         {l.text}
       </div>,
     );
   }
   if (!marked) rows.push(marker);
-  return <div className="rounded-[8px] bg-[var(--code-bg)] max-h-[380px] overflow-auto py-1.5 font-mono text-[11px] leading-[15px] selectable">{rows}</div>;
+  return <div className="code-box max-h-[380px] overflow-auto py-1.5 font-mono text-[11px] leading-[15px] selectable">{rows}</div>;
 }
 
 const shellQuote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
@@ -571,7 +571,7 @@ function ErrorInspector({ id }) {
       </Section>
       {g.stack?.length > 0 && (
         <Section title="Stack trace">
-          <pre className="rounded-[8px] bg-[var(--code-bg)] p-3 font-mono text-[11px] leading-[15px] overflow-auto max-h-60 selectable whitespace-pre">{g.stack.join('\n')}</pre>
+          <pre className="code-box p-3 font-mono text-[11px] leading-[15px] overflow-auto max-h-60 selectable whitespace-pre">{g.stack.join('\n')}</pre>
         </Section>
       )}
       <Section title="Latest occurrences">
@@ -667,11 +667,11 @@ function LogInspector({ data: l }) {
     <>
       <Header title="Log line" subtitle={`${short(l.service)} · ${l.pod}`} right={<span className={cx('h-5 px-2 rounded-md text-subheadline font-bold grid place-items-center', lv.cls)}>{l.level}</span>} />
       <Section title={dayTime(l.ts)}>
-        <pre className="rounded-[8px] bg-[var(--code-bg)] p-3 font-mono text-[11.5px] leading-[16px] whitespace-pre-wrap break-words selectable">{l.text}</pre>
+        <pre className="code-box p-3 font-mono text-[11.5px] leading-[16px] whitespace-pre-wrap break-words selectable">{l.text}</pre>
       </Section>
       {l.json && (
         <Section title="Structured fields">
-          <pre className="rounded-[8px] bg-[var(--code-bg)] p-3 font-mono text-[11px] leading-[15px] whitespace-pre-wrap break-words selectable max-h-80 overflow-auto">{JSON.stringify(l.json, null, 2)}</pre>
+          <pre className="code-box p-3 font-mono text-[11px] leading-[15px] whitespace-pre-wrap break-words selectable max-h-80 overflow-auto">{JSON.stringify(l.json, null, 2)}</pre>
         </Section>
       )}
       <div className="px-5 py-4 hairline-t flex gap-2">

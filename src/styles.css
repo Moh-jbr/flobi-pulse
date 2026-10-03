@@ -193,7 +193,7 @@
     --glass-rgb: 0 0 0;
     --shadow-pop: 0 24px 64px rgb(0 0 0 / 0.7), 0 0 0 1px #262626;
     --scrim: rgb(0 0 0 / 0.6);
-    --code-bg: #050505;
+    --code-bg: #000000;
   }
 }
 
@@ -343,6 +343,13 @@
   background: var(--bg-elevated);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-card);
+}
+
+/* Logs, stacks and JSON: a well set into the panel, with its own edge so it reads as one box. */
+@utility code-box {
+  background: var(--code-bg);
+  border-radius: 8px;
+  box-shadow: inset 0 0 0 1px var(--line-strong);
 }
 
 @utility hairline-b {

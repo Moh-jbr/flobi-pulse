@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import { useStore, setState, navigate, invoke } from '../lib/store.js';
 import Icon from './icons.jsx';
-import { cx, IconButton, Popover, StatusDot, Segmented, Empty, useWindowWidth, AlertText } from './ui.jsx';
+import { cx, IconButton, Popover, StatusDot, Segmented, Empty, useWindowWidth, AlertText, Spinner } from './ui.jsx';
 import { compact, ago, short, duration } from '../lib/format.js';
 import { shortcut } from '../lib/platform.js';
 
@@ -60,7 +60,7 @@ function UpdateButton() {
       )}
     >
       {u.status === 'downloading' && <span className="absolute inset-y-0 left-0 bg-white/20" style={{ width: `${pct}%`, transition: 'width 300ms var(--ease-smooth)' }} />}
-      <Icon name={failed ? 'refresh' : 'download'} size={14} strokeWidth={2} className={cx('relative', u.status === 'installing' && 'spinner')} />
+      {u.status === 'installing' ? <Spinner size={14} className="relative text-on-accent!" /> : <Icon name={failed ? 'refresh' : 'download'} size={14} strokeWidth={2} className="relative" />}
       <span className="relative tabular">{label}</span>
     </button>
   );
