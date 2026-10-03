@@ -91,11 +91,12 @@ function ServiceCard({ s, metricsSource }) {
       <div className="flex items-center gap-2 min-w-0">
         <span className="text-headline font-semibold truncate">{s.short}</span>
         {s.hosts?.length > 0 && <Icon name="globe" size={12} className="text-label-3 shrink-0" />}
-        {/* Healthy is the normal state: a quiet check, so the pills that remain are the ones worth reading. */}
+        {/* Healthy is the normal state: said in words but without a filled pill, so the pills that remain are the ones worth reading. */}
         <span className="ml-auto shrink-0">
           {s.health === 'healthy' ? (
-            <span title="Healthy" aria-label="Healthy" className="w-5 h-5 grid place-items-center text-green">
-              <Icon name="check" size={13} strokeWidth={2.2} />
+            <span className="inline-flex items-center gap-1 h-5 pl-1.5 pr-1 text-subheadline text-label-2">
+              <Icon name="check" size={12} strokeWidth={2.4} className="text-green" />
+              Healthy
             </span>
           ) : (
             <HealthPill health={s.health} />
