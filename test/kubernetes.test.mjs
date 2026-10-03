@@ -81,3 +81,10 @@ test('refuses a server whose certificate does not match the cluster CA', async (
   await assert.rejects(() => client.version(), /certificate|self.signed|unable to verify/i);
   server.close();
 });
+
+test('metricsError says what a failed metrics-server read means', async () => {
+  const { metricsError } = await import('../electron/core/sources/kubernetes.mjs');
+  assert.match(metricsError({ status: 403, message: 'HTTP 403' }), /may not read live usage/);
+  assert.match(metricsError({ status: 503, message: 'HTTP 503' }), /isn't answering.*503/);
+  assert.equal(metricsError(new Error('socket hang up')), 'socket hang up');
+});

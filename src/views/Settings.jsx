@@ -347,7 +347,11 @@ function Tabs({ value, onChange, problems }) {
               on ? 'text-label font-medium shadow-[inset_0_-2px_0_var(--label)]' : 'text-label-2 hover:text-label hover:bg-fill-4',
             )}
           >
-            {t.label}
+            {/* The label's medium-weight width is always reserved, so choosing a tab doesn't nudge the ones after it. */}
+            <span className="grid">
+              <span aria-hidden="true" className="col-start-1 row-start-1 invisible font-medium">{t.label}</span>
+              <span className="col-start-1 row-start-1">{t.label}</span>
+            </span>
             {problems[t.id] && <StatusDot tone={problems[t.id]} size={6} />}
           </button>
         );

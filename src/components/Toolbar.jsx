@@ -197,10 +197,12 @@ export default function Toolbar() {
 }
 
 // `inner` limits the width of the content only, so the whole view (including
-// the empty area beside a narrow column) still scrolls with the wheel.
+// the empty area beside a narrow column) still scrolls with the wheel. The
+// scrollbar's room is always kept, so content doesn't shift sideways when a
+// page (or a Settings tab) grows tall enough to scroll.
 export function ViewScroll({ children, className, inner }) {
   return (
-    <div className={cx('absolute inset-0 overflow-y-auto pt-[60px] pb-10 px-6', className)}>
+    <div className={cx('absolute inset-0 overflow-y-auto [scrollbar-gutter:stable] pt-[60px] pb-10 px-6', className)}>
       {inner ? <div className={inner}>{children}</div> : children}
     </div>
   );

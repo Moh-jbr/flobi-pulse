@@ -440,6 +440,13 @@ export class Informer {
   }
 }
 
+/** What a failed metrics-server read means, in words the Sources tab can show. */
+export function metricsError(e) {
+  if (e?.status === 403) return 'The viewer account may not read live usage (pods in the metrics.k8s.io API group). Grant it get and list on pods.metrics.k8s.io in this namespace.';
+  if (e?.status === 404 || e?.status === 503) return `metrics-server isn't answering in this cluster (HTTP ${e.status}). Its pods in kube-system may be down.`;
+  return e?.message || String(e);
+}
+
 /** Polls metrics-server for live CPU/memory usage. */
 export class MetricsPoller {
   constructor(client, ns, { intervalMs = 15_000, onMetrics, onStatus }) {
@@ -459,7 +466,7 @@ export class MetricsPoller {
         this.onMetrics({ pods: pods?.items || [], nodes: nodes?.items || [], at: Date.now() });
         this.onStatus?.('ok');
       } catch (e) {
-        if (!this.stopped) this.onStatus?.('error', e.message);
+        if (!this.stopped) this.onStatus?.(e?.status === 403 ? 'forbidden' : 'error', metricsError(e));
       }
       if (!this.stopped) this.timer = setTimeout(tick, this.intervalMs);
     };

@@ -49,8 +49,25 @@ function Stat({ label, value, sub, spark, tone, icon, onClick }) {
   );
 }
 
-function ServiceCard({ s }) {
+/**
+ * CPU and memory for a card: live from metrics-server against the pod's limit
+ * (or request), else what the service's autoscaler last measured, which is
+ * against the request. `why` says what a dash means when there's neither.
+ */
+function usageOf(s, metricsSource) {
+  const scaled = (v) => (v != null ? v / 100 : null);
+  const cpu = s.cpuPct ?? scaled(s.scaling?.cpuNow);
+  const mem = s.memPct ?? scaled(s.scaling?.memNow);
+  const fromScaler = (live, v) => live == null && v != null;
+  const st = metricsSource?.status;
+  const why = st && st !== 'ok' ? `Metrics server: ${st}${metricsSource.message ? ` — ${metricsSource.message}` : ''}` : !st ? 'Waiting for the metrics server' : 'No limit or request set, and no autoscaler measuring it';
+  const title = (live, v, what) => (v == null ? why : fromScaler(live, v) ? `${what} as % of its request, from the autoscaler` : `${what} as % of its limit (or request when it has no limit)`);
+  return { cpu, mem, cpuTitle: title(s.cpuPct, cpu, 'CPU'), memTitle: title(s.memPct, mem, 'Memory') };
+}
+
+function ServiceCard({ s, metricsSource }) {
   const problem = s.health === 'down' || s.health === 'degraded';
+  const u = usageOf(s, metricsSource);
   return (
     <button
       type="button"
@@ -88,19 +105,19 @@ function ServiceCard({ s }) {
         <div className={cx('text-callout leading-4 line-clamp-2', s.health === 'down' ? 'text-red' : 'text-orange')}>{s.reasons.join(' · ')}</div>
       ) : (
         <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-subheadline">
-          <div>
+          <div title={u.cpuTitle}>
             <div className="flex justify-between text-label-3 mb-1">
               <span>CPU</span>
-              <span className="tabular">{s.cpuPct != null ? pct(s.cpuPct) : '—'}</span>
+              <span className="tabular">{u.cpu != null ? pct(u.cpu) : '—'}</span>
             </div>
-            <Meter value={s.cpuPct} />
+            <Meter value={u.cpu} />
           </div>
-          <div>
+          <div title={u.memTitle}>
             <div className="flex justify-between text-label-3 mb-1">
               <span>Memory</span>
-              <span className="tabular">{s.memPct != null ? pct(s.memPct) : '—'}</span>
+              <span className="tabular">{u.mem != null ? pct(u.mem) : '—'}</span>
             </div>
-            <Meter value={s.memPct} />
+            <Meter value={u.mem} />
           </div>
         </div>
       )}
@@ -124,6 +141,7 @@ export default function Overview() {
   const errors = useStore((s) => s.sections.errors);
   const sources = useStore((s) => s.sections.sources);
   const session = useStore((s) => s.sections.session);
+  const metricsDown = ['error', 'forbidden', 'degraded', 'unavailable'].includes(sources?.metrics?.status);
   const [filter, setFilter] = useState('all');
   const now = useNow(15_000);
 
@@ -185,6 +203,14 @@ export default function Overview() {
               <>
                 {services.length} workloads in the {session?.namespace || 'flobi'} namespace
                 {rollingOut > 0 && <span className="text-accent font-medium"> · {rollingOut} rolling out</span>}
+                {metricsDown && (
+                  <span className="text-orange">
+                    {' · '}
+                    <button type="button" title={sources.metrics.message || undefined} onClick={() => navigate({ to: 'settings', tab: 'sources' })} className="hover:underline">
+                      live CPU and memory unavailable
+                    </button>
+                  </span>
+                )}
               </>
             }
             right={
@@ -216,7 +242,7 @@ export default function Overview() {
           ) : list.length ? (
             <div className="grid grid-cols-[repeat(auto-fill,minmax(250px,1fr))] gap-3">
               {list.map((s) => (
-                <ServiceCard key={s.name} s={s} />
+                <ServiceCard key={s.name} s={s} metricsSource={sources?.metrics} />
               ))}
             </div>
           ) : (

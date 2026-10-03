@@ -59,6 +59,7 @@ const SOURCES = [
   ['kubernetes', 'Cluster'],
   ['live', 'Live'],
   ['cloudsql', 'Database'],
+  ['metrics', 'Metrics'],
   ['sentry', 'Sentry'],
   ['cloudflare', 'Cloudflare'],
 ];
