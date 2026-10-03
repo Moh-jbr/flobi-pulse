@@ -79,7 +79,7 @@ function Release({ r, isNew, now, startOpen, inRepo }) {
         </div>
       </div>
       {open && r.body && (
-        <div className="mt-3 rounded-[12px] bg-fill-4 p-3.5">
+        <div className="mt-3 rounded-[8px] bg-fill-4 p-3.5">
           <Markdown text={r.body} />
         </div>
       )}
@@ -92,7 +92,7 @@ function ConnectGitHub({ owner }) {
   return (
     <Card className="max-w-[720px]">
       <div className="flex items-start gap-3">
-        <div className="w-10 h-10 rounded-[12px] bg-accent-tint grid place-items-center shrink-0">
+        <div className="w-10 h-10 rounded-[8px] bg-accent-tint grid place-items-center shrink-0">
           <Icon name="tag" size={19} className="text-accent" />
         </div>
         <div className="min-w-0 flex-1">
@@ -110,7 +110,7 @@ function ConnectGitHub({ owner }) {
             </li>
             <li>Paste it in Settings → Integrations → GitHub. If your organization requires approval, an owner approves it once.</li>
           </ol>
-          <Button className="mt-4" variant="primary" icon="settings" onClick={() => navigate('settings')}>
+          <Button className="mt-4" variant="primary" icon="settings" onClick={() => navigate({ to: 'settings', tab: 'integrations' })}>
             Open Settings
           </Button>
         </div>
@@ -251,7 +251,7 @@ function StartedVersioning({ list }) {
   if (!list.length) return null;
   return (
     <div className="px-4 py-3 flex items-start gap-3">
-      <div className="w-7 h-7 rounded-[9px] bg-green-tint grid place-items-center shrink-0">
+      <div className="w-7 h-7 rounded-[7px] bg-green-tint grid place-items-center shrink-0">
         <Icon name="tag" size={14} className="text-green" />
       </div>
       <div className="min-w-0 flex-1">

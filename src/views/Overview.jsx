@@ -232,7 +232,7 @@ export default function Overview() {
             <Card pad={false} className="p-1.5">
               {!activeAlerts.length && <div className="px-3 py-6 text-center text-callout text-label-2">No active alerts</div>}
               {activeAlerts.slice(0, 6).map((a) => (
-                <button key={a.id} type="button" onClick={() => navigate(a.view || 'crashes')} className={cx('w-full text-left flex gap-2.5 p-2 rounded-[12px] hover:bg-fill-4', a.clearing && 'opacity-60')}>
+                <button key={a.id} type="button" onClick={() => navigate(a.view || 'crashes')} className={cx('w-full text-left flex gap-2.5 p-2 rounded-[8px] hover:bg-fill-4', a.clearing && 'opacity-60')}>
                   <StatusDot tone={SEV_TONE[a.severity]} size={8} className="mt-1.5" pulse={a.severity === 'critical' && !a.acked && !a.clearing} />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5 min-w-0">
@@ -272,7 +272,7 @@ export default function Overview() {
             <Card pad={false} className="p-1.5">
               {!crashes.length && <div className="px-3 py-6 text-center text-callout text-label-2">No crashes in the last 7 days</div>}
               {crashes.slice(0, 4).map((c) => (
-                <button key={c.id} type="button" onClick={() => inspect('crash', c.id)} className="w-full text-left flex gap-2.5 p-2 rounded-[12px] hover:bg-fill-4">
+                <button key={c.id} type="button" onClick={() => inspect('crash', c.id)} className="w-full text-left flex gap-2.5 p-2 rounded-[8px] hover:bg-fill-4">
                   <div className={cx('w-6 h-6 rounded-full grid place-items-center shrink-0', c.reason === 'OOMKilled' ? 'bg-red-tint' : 'bg-orange-tint')}>
                     <Icon name={c.reason === 'OOMKilled' ? 'memory' : 'bolt'} size={12} className={c.reason === 'OOMKilled' ? 'text-red' : 'text-orange'} strokeWidth={2} />
                   </div>

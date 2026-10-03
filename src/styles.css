@@ -1,15 +1,13 @@
 @import 'tailwindcss';
 
 /*
-  Flobi Pulse design system — OS 27 (Liquid Glass, refined).
-  • Type: the macOS HIG text styles (13 pt body), SF Pro on Mac, Segoe UI Variable on Windows.
+  Flobi Pulse design system — Graphite.
+  • Surface: pure black (white in light mode), cards a step lighter with a 1 px hairline,
+    no shadows, no tinted glass. Colour only ever means state: green, orange, red.
+  • Type: Geist for words, Geist Mono for numbers, IDs and logs (bundled, no network).
   • Space: 4 pt base, 8 pt grid.
-  • Shape: concentric radii (inner radius = outer radius − padding).
-  • Material: tinted glass only on the navigation layer (sidebar, toolbars, sheets, popovers),
-    never a backdrop blur (see @utility glass). Content (tables, logs, charts) sits on solid
-    surfaces for legibility.
-  • Transparency: user-adjustable "Clear ↔ Tinted" like OS 27 (--glass-alpha).
-  • Motion: springs; everything collapses to fades with Reduce Motion.
+  • Shape: 8–12 px radii, flat.
+  • Motion: short fades; everything collapses with Reduce Motion.
 */
 
 /* Dark when the app is set to dark, and also whenever the OS is dark unless the app is set to
@@ -28,10 +26,11 @@
 }
 
 @theme {
-  --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
-  --font-display: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI Variable Display', 'Segoe UI', system-ui, sans-serif;
-  /* Consolas before Cascadia: Chromium draws Cascadia near-bold at log sizes on Windows. */
-  --font-mono: 'SF Mono', ui-monospace, Menlo, Consolas, 'Cascadia Mono', monospace;
+  --font-sans: 'Geist Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+  --font-display: 'Geist Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Display', 'Segoe UI', system-ui, sans-serif;
+  /* Bundled with the app, so logs read the same on every computer. Consolas before Cascadia as a
+     fallback: Chromium draws Cascadia near-bold at log sizes on Windows. */
+  --font-mono: 'Geist Mono Variable', 'SF Mono', ui-monospace, Menlo, Consolas, 'Cascadia Mono', monospace;
 
   /* HIG macOS text styles */
   --text-large-title: 26px;
@@ -55,13 +54,13 @@
   --text-hero: 44px;
   --text-hero--line-height: 48px;
 
-  --radius-xs: 5px;
-  --radius-sm: 8px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
-  --radius-xl: 18px;
-  --radius-2xl: 22px;
-  --radius-3xl: 28px;
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+  --radius-2xl: 14px;
+  --radius-3xl: 16px;
 
   --ease-spring: linear(0.0001, 0.036, 0.1241, 0.238, 0.3677, 0.4974, 0.6154, 0.7233, 0.8124, 0.8873, 0.9455, 0.9876, 1.018, 1.0375, 1.048, 1.0523, 1.0518, 1.0481, 1.0424, 1.0359, 1.029, 1.0225, 1.0167, 1.0115, 1.0074, 1.004, 1.0014, 0.9996, 0.9984, 0.9976, 0.9973, 0.9972, 0.9974, 0.9976, 0.998, 0.9983, 0.9987, 0.999, 0.9993, 0.9995, 1);
   --ease-smooth: linear(0.0001, 0.0242, 0.0819, 0.1583, 0.243, 0.3292, 0.4126, 0.4906, 0.5619, 0.6257, 0.6822, 0.7315, 0.7742, 0.8108, 0.8421, 0.8686, 0.891, 0.9099, 0.9256, 0.9387, 0.9497, 0.9587, 0.9662, 0.9724, 0.9775, 0.9817, 0.9851, 0.9879, 0.9902, 0.992, 0.9936, 0.9948, 0.9958, 0.9966, 0.9973, 0.9978, 0.9982, 0.9986, 0.9989, 0.9991, 1);
@@ -84,6 +83,9 @@
   --color-fill-4: var(--fill-4);
   --color-accent: var(--accent);
   --color-accent-tint: var(--accent-tint);
+  --color-on-accent: var(--on-accent);
+  --color-blue: var(--blue);
+  --color-blue-tint: var(--blue-tint);
   --color-green: var(--green);
   --color-orange: var(--orange);
   --color-red: var(--red);
@@ -102,92 +104,96 @@
 :root {
   color-scheme: light;
   --bg-content: #ffffff;
-  /* The content surface runs under the floating sidebar and inspector, so their gutters match it. */
+  /* The content surface runs under the sidebar and inspector, so their gutters match it. */
   --bg-window: var(--bg-content);
   --bg-elevated: #ffffff;
-  --bg-grouped: #f5f5f7;
-  --label: rgb(0 0 0 / 0.88);
-  --label-2: rgb(60 60 67 / 0.64);
-  --label-3: rgb(60 60 67 / 0.36);
-  --label-4: rgb(60 60 67 / 0.2);
-  --separator: rgb(60 60 67 / 0.13);
-  --tooltip-bg: rgb(30 30 32 / 0.94);
-  --tooltip-fg: #ffffff;
-  --fill-1: rgb(120 120 128 / 0.2);
-  --fill-2: rgb(120 120 128 / 0.14);
-  --fill-3: rgb(118 118 128 / 0.1);
-  --fill-4: rgb(116 116 128 / 0.06);
-  --accent: #0088ff;
-  --accent-tint: rgb(0 136 255 / 0.12);
-  --green: #34c759;
-  --orange: #ff8d28;
-  --red: #ff383c;
-  --yellow: #ffcc00;
-  --purple: #cb30e0;
-  --teal: #00c3d0;
-  --indigo: #6155f5;
-  --gray: #8e8e93;
-  --green-tint: rgb(52 199 89 / 0.14);
-  --orange-tint: rgb(255 141 40 / 0.15);
-  --red-tint: rgb(255 56 60 / 0.12);
-  --gray-tint: rgb(142 142 147 / 0.14);
+  --bg-grouped: #fafafa;
+  --label: #171717;
+  --label-2: #5f5f5f;
+  --label-3: #8f8f8f;
+  --label-4: #c7c7c7;
+  --separator: #ebebeb;
+  --line: #e5e5e5;
+  --line-strong: #d4d4d4;
+  --tooltip-bg: #171717;
+  --tooltip-fg: #fafafa;
+  --fill-1: rgb(0 0 0 / 0.12);
+  --fill-2: rgb(0 0 0 / 0.08);
+  --fill-3: rgb(0 0 0 / 0.05);
+  --fill-4: rgb(0 0 0 / 0.03);
+  /* The accent is ink, not a hue: selection, primary buttons, toggles and links. */
+  --accent: #171717;
+  --accent-tint: rgb(0 0 0 / 0.07);
+  --on-accent: #ffffff;
+  --blue: #0068d6;
+  --blue-tint: rgb(0 104 214 / 0.1);
+  --green: #1a9f4b;
+  --orange: #d97706;
+  --red: #dc2f3a;
+  --yellow: #ca8a04;
+  --purple: #7c3aed;
+  --teal: #0e8a8a;
+  --indigo: #4f46e5;
+  --gray: #8f8f8f;
+  --green-tint: rgb(26 159 75 / 0.1);
+  --orange-tint: rgb(217 119 6 / 0.11);
+  --red-tint: rgb(220 47 58 / 0.09);
+  --gray-tint: rgb(0 0 0 / 0.05);
   --thumb: #ffffff;
 
-  --glass-alpha: 0.72;
-  --glass-rgb: 243 243 246;
-  --glass-border: rgb(255 255 255 / 0.65);
-  --glass-edge: rgb(0 0 0 / 0.07);
-  --glass-highlight: rgb(255 255 255 / 0.85);
-  --shadow-glass: 0 10px 34px rgb(0 0 0 / 0.08), 0 2px 6px rgb(0 0 0 / 0.04);
-  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.04), 0 0 0 0.5px rgb(0 0 0 / 0.06);
-  --shadow-pop: 0 24px 60px rgb(0 0 0 / 0.18), 0 4px 14px rgb(0 0 0 / 0.08);
-  --scrim: rgb(0 0 0 / 0.14);
-  --code-bg: #f6f6f8;
+  /* Kept for the Glass setting's slider; Graphite's panels are solid whatever it says. */
+  --glass-alpha: 1;
+  --glass-rgb: 255 255 255;
+  --shadow-glass: 0 0 0 1px var(--line);
+  --shadow-card: 0 0 0 1px var(--line);
+  --shadow-pop: 0 16px 48px rgb(0 0 0 / 0.12), 0 2px 8px rgb(0 0 0 / 0.06);
+  --scrim: rgb(0 0 0 / 0.2);
+  --code-bg: #fafafa;
 }
 
 /* The dark tokens, once: `@variant dark` puts them under both branches of the variant above. */
 :root {
   @variant dark {
     color-scheme: dark;
-    --bg-content: #161618;
-    --bg-elevated: #1e1e21;
-    --bg-grouped: #111113;
-    --label: rgb(255 255 255 / 0.92);
-    --label-2: rgb(235 235 245 / 0.62);
-    --label-3: rgb(235 235 245 / 0.34);
-    --label-4: rgb(235 235 245 / 0.18);
-    --separator: rgb(255 255 255 / 0.09);
-    --tooltip-bg: rgb(245 245 247 / 0.96);
-    --tooltip-fg: #1d1d1f;
-    --fill-1: rgb(120 120 128 / 0.36);
-    --fill-2: rgb(120 120 128 / 0.28);
-    --fill-3: rgb(118 118 128 / 0.22);
-    --fill-4: rgb(116 116 128 / 0.14);
-    --accent: #0091ff;
-    --accent-tint: rgb(0 145 255 / 0.2);
-    --green: #30d158;
-    --orange: #ff9230;
-    --red: #ff4245;
-    --yellow: #ffd600;
-    --purple: #db34f2;
-    --teal: #00d2e0;
-    --indigo: #6d7cff;
-    --gray: #98989d;
-    --green-tint: rgb(48 209 88 / 0.18);
-    --orange-tint: rgb(255 146 48 / 0.2);
-    --red-tint: rgb(255 66 69 / 0.2);
-    --gray-tint: rgb(152 152 157 / 0.2);
-    --thumb: #5a5a5f;
+    --bg-content: #000000;
+    --bg-elevated: #0a0a0a;
+    --bg-grouped: #050505;
+    --label: #ededed;
+    --label-2: #a1a1a1;
+    --label-3: #6b6b6b;
+    --label-4: #3d3d3d;
+    --separator: #1c1c1c;
+    --line: #1f1f1f;
+    --line-strong: #2e2e2e;
+    --tooltip-bg: #ededed;
+    --tooltip-fg: #0a0a0a;
+    --fill-1: rgb(255 255 255 / 0.16);
+    --fill-2: rgb(255 255 255 / 0.1);
+    --fill-3: rgb(255 255 255 / 0.065);
+    --fill-4: rgb(255 255 255 / 0.035);
+    --accent: #ededed;
+    --accent-tint: rgb(255 255 255 / 0.1);
+    --on-accent: #0a0a0a;
+    --blue: #52a8ff;
+    --blue-tint: rgb(82 168 255 / 0.14);
+    --green: #45c46b;
+    --orange: #f5a524;
+    --red: #f2555a;
+    --yellow: #f5d90a;
+    --purple: #a78bfa;
+    --teal: #2dd4bf;
+    --indigo: #818cf8;
+    --gray: #8a8a8a;
+    --green-tint: rgb(69 196 107 / 0.13);
+    --orange-tint: rgb(245 165 36 / 0.13);
+    --red-tint: rgb(242 85 90 / 0.14);
+    --gray-tint: rgb(255 255 255 / 0.07);
+    --thumb: #232323;
 
-    --glass-rgb: 34 34 38;
-    --glass-border: rgb(255 255 255 / 0.1);
-    --glass-edge: rgb(0 0 0 / 0.5);
-    --glass-highlight: rgb(255 255 255 / 0.1);
-    --shadow-glass: 0 12px 40px rgb(0 0 0 / 0.45), 0 2px 8px rgb(0 0 0 / 0.3);
-    --shadow-card: 0 0 0 0.5px rgb(255 255 255 / 0.07);
-    --shadow-pop: 0 30px 80px rgb(0 0 0 / 0.6), 0 4px 16px rgb(0 0 0 / 0.4);
-    --scrim: rgb(0 0 0 / 0.4);
-    --code-bg: #111113;
+    --glass-rgb: 0 0 0;
+    --shadow-pop: 0 24px 64px rgb(0 0 0 / 0.7), 0 0 0 1px #262626;
+    --scrim: rgb(0 0 0 / 0.6);
+    --code-bg: #050505;
   }
 }
 
@@ -209,7 +215,7 @@
     overflow: hidden;
     user-select: none;
     cursor: default;
-    font-feature-settings: 'cv11', 'ss01';
+    font-feature-settings: 'ss01';
   }
   input,
   textarea,
@@ -219,7 +225,7 @@
     color: inherit;
   }
   ::selection {
-    background: var(--accent-tint);
+    background: var(--blue-tint);
   }
   input,
   textarea {
@@ -261,8 +267,8 @@
     -webkit-user-drag: none;
   }
   :focus-visible {
-    outline: 3px solid color-mix(in srgb, var(--accent) 55%, transparent);
-    outline-offset: 1px;
+    outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
+    outline-offset: 2px;
   }
   .selectable,
   .selectable * {
@@ -295,32 +301,25 @@
    behind it, which flickers on every hover. The floating surfaces are tinted densely enough to
    read without it. (Same for hover: no `filter` on these, it forces the same switch.) */
 @utility glass {
-  background: rgb(var(--glass-rgb) / calc(var(--glass-alpha) * 0.5 + 0.48));
-  box-shadow:
-    var(--shadow-glass),
-    inset 0 0.5px 0 var(--glass-highlight),
-    0 0 0 0.5px var(--glass-edge);
+  background: var(--bg-elevated);
+  box-shadow: 0 0 0 1px var(--line);
   &:is(button):hover {
     background-image: linear-gradient(var(--fill-4), var(--fill-4));
   }
 }
 
-/* In-flow panels (sidebar, docked inspector) sit on the content surface itself: the glass tint and
-   edge, but no drop shadow — a shadow would darken the gutters on three sides only (the content
-   area paints over it on the fourth) and no backdrop blur (there's never anything behind them). */
+/* In-flow panels (sidebar, docked inspector) sit on the content surface itself. */
 @utility glass-panel {
-  background: rgb(var(--glass-rgb) / var(--glass-alpha));
-  box-shadow:
-    inset 0 0.5px 0 var(--glass-highlight),
-    0 0 0 0.5px var(--glass-edge);
+  background: var(--bg-content);
+  box-shadow: 0 0 0 1px var(--line);
 }
 
+/* Floating surfaces (sheets, popovers, menus): a step up from the page, with a lift. */
 @utility glass-strong {
-  background: rgb(var(--glass-rgb) / calc(var(--glass-alpha) * 0.1 + 0.9));
+  background: var(--bg-elevated);
   box-shadow:
     var(--shadow-pop),
-    inset 0 0.5px 0 var(--glass-highlight),
-    0 0 0 0.5px var(--glass-edge);
+    0 0 0 1px var(--line-strong);
 }
 
 @utility drag {
@@ -336,16 +335,16 @@
 
 @utility card {
   background: var(--bg-elevated);
-  border-radius: var(--radius-xl);
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow-card);
 }
 
 @utility hairline-b {
-  box-shadow: inset 0 -0.5px 0 var(--separator);
+  box-shadow: inset 0 -1px 0 var(--separator);
 }
 
 @utility hairline-t {
-  box-shadow: inset 0 0.5px 0 var(--separator);
+  box-shadow: inset 0 1px 0 var(--separator);
 }
 
 @utility press {

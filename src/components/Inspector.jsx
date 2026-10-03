@@ -42,7 +42,7 @@ function LogBlock({ lines, loading, empty = 'No log lines.' }) {
     );
   if (!lines?.length) return <div className="text-callout text-label-2">{empty}</div>;
   return (
-    <div className="rounded-[12px] bg-[var(--code-bg)] max-h-[340px] overflow-auto py-1.5 font-mono text-[11px] leading-[15px] selectable">
+    <div className="rounded-[8px] bg-[var(--code-bg)] max-h-[340px] overflow-auto py-1.5 font-mono text-[11px] leading-[15px] selectable">
       {lines.map((l, i) => (
         <div key={l.id || i} className={cx('px-3 py-[1px] whitespace-pre-wrap break-words', l.level === 'ERROR' && 'text-red', l.level === 'WARN' && 'text-orange')}>
           <span className="text-label-3 mr-2">{clockHMS(l.ts)}</span>
@@ -121,7 +121,7 @@ function ServiceInspector({ id }) {
         <IconButton icon="mute" label={`Mute ${s.short} for 1 hour`} onClick={() => invoke('alerts:mute', { target: s.name, minutes: 60 })} />
       </div>
       {s.reasons?.length > 0 && s.health !== 'healthy' && (
-        <div className={cx('mx-5 mb-4 rounded-[14px] px-3.5 py-2.5 text-callout', s.health === 'down' ? 'bg-red-tint' : s.health === 'deploying' ? 'bg-accent-tint' : 'bg-orange-tint')}>
+        <div className={cx('mx-5 mb-4 rounded-[10px] px-3.5 py-2.5 text-callout', s.health === 'down' ? 'bg-red-tint' : s.health === 'deploying' ? 'bg-accent-tint' : 'bg-orange-tint')}>
           {s.reasons.map((r, i) => (
             <div key={i}>• {r}</div>
           ))}
@@ -149,7 +149,7 @@ function ServiceInspector({ id }) {
             // A Pending pod hasn't started a container yet, so there's no start time.
             const started = p.containers?.[0]?.startedAt || p.startedAt;
             return (
-              <button key={p.name} type="button" onClick={() => inspect('pod', p.name)} className="text-left rounded-[12px] px-2.5 py-2 hover:bg-fill-4 -mx-2.5">
+              <button key={p.name} type="button" onClick={() => inspect('pod', p.name)} className="text-left rounded-[8px] px-2.5 py-2 hover:bg-fill-4 -mx-2.5">
                 <div className="flex items-center gap-2">
                   <StatusDot tone={STATE_TONE[p.state]} size={7} />
                   <span className="font-mono text-callout truncate flex-1">{p.name}</span>
@@ -255,7 +255,7 @@ function PodInspector({ id }) {
       ))}
       {p.lastTermination && (
         <Section title="Last crash">
-          <div className={cx('rounded-[14px] px-3.5 py-2.5 text-callout mb-3', p.lastTermination.reason === 'OOMKilled' ? 'bg-red-tint' : 'bg-orange-tint')}>
+          <div className={cx('rounded-[10px] px-3.5 py-2.5 text-callout mb-3', p.lastTermination.reason === 'OOMKilled' ? 'bg-red-tint' : 'bg-orange-tint')}>
             <div className="font-semibold">
               {p.lastTermination.reason === 'OOMKilled' ? 'Ran out of memory' : p.lastTermination.reason} · exit code {p.lastTermination.exitCode}
             </div>
@@ -377,7 +377,7 @@ function RequestLogLines({ lines, r }) {
     );
   }
   if (!marked) rows.push(marker);
-  return <div className="rounded-[12px] bg-[var(--code-bg)] max-h-[380px] overflow-auto py-1.5 font-mono text-[11px] leading-[15px] selectable">{rows}</div>;
+  return <div className="rounded-[8px] bg-[var(--code-bg)] max-h-[380px] overflow-auto py-1.5 font-mono text-[11px] leading-[15px] selectable">{rows}</div>;
 }
 
 const shellQuote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
@@ -432,7 +432,7 @@ function RequestInspector({ data: r }) {
 
       {failed && (
         <Section title="What went wrong">
-          <div className={cx('rounded-[12px] p-3 text-callout', serverSide ? 'bg-red-tint' : 'bg-orange-tint')}>
+          <div className={cx('rounded-[8px] p-3 text-callout', serverSide ? 'bg-red-tint' : 'bg-orange-tint')}>
             <div className="font-semibold">
               {noResponse ? `0 · ${NO_RESPONSE} before an answer came back.` : `${r.status} ${statusText(r.status)}: ${serverSide ? `the problem is on our side${svc ? ` (${svc})` : ''}, not the user's.` : 'the request was refused, usually because of what the caller sent or who they are.'}`}
             </div>
@@ -571,7 +571,7 @@ function ErrorInspector({ id }) {
       </Section>
       {g.stack?.length > 0 && (
         <Section title="Stack trace">
-          <pre className="rounded-[12px] bg-[var(--code-bg)] p-3 font-mono text-[11px] leading-[15px] overflow-auto max-h-60 selectable whitespace-pre">{g.stack.join('\n')}</pre>
+          <pre className="rounded-[8px] bg-[var(--code-bg)] p-3 font-mono text-[11px] leading-[15px] overflow-auto max-h-60 selectable whitespace-pre">{g.stack.join('\n')}</pre>
         </Section>
       )}
       <Section title="Latest occurrences">
@@ -610,7 +610,7 @@ function CrashInspector({ id }) {
   return (
     <>
       <Header title={oom ? 'Out of memory' : why.label} subtitle={`${short(c.service)} · ${dayTime(c.at)}`} right={c.fromLogs ? <Pill tone="gray">From the logs</Pill> : <Pill tone={oom ? 'red' : 'orange'} strong>exit {c.exitCode ?? '—'}</Pill>} />
-      <div className="mx-5 mb-4 rounded-[14px] bg-fill-4 px-3.5 py-2.5 text-callout">
+      <div className="mx-5 mb-4 rounded-[10px] bg-fill-4 px-3.5 py-2.5 text-callout">
         {oom
           ? 'The container used more memory than its limit and the kernel killed it. Kubernetes restarted it.'
           : c.reason === 'CrashLoopBackOff'
@@ -667,11 +667,11 @@ function LogInspector({ data: l }) {
     <>
       <Header title="Log line" subtitle={`${short(l.service)} · ${l.pod}`} right={<span className={cx('h-5 px-2 rounded-md text-subheadline font-bold grid place-items-center', lv.cls)}>{l.level}</span>} />
       <Section title={dayTime(l.ts)}>
-        <pre className="rounded-[12px] bg-[var(--code-bg)] p-3 font-mono text-[11.5px] leading-[16px] whitespace-pre-wrap break-words selectable">{l.text}</pre>
+        <pre className="rounded-[8px] bg-[var(--code-bg)] p-3 font-mono text-[11.5px] leading-[16px] whitespace-pre-wrap break-words selectable">{l.text}</pre>
       </Section>
       {l.json && (
         <Section title="Structured fields">
-          <pre className="rounded-[12px] bg-[var(--code-bg)] p-3 font-mono text-[11px] leading-[15px] whitespace-pre-wrap break-words selectable max-h-80 overflow-auto">{JSON.stringify(l.json, null, 2)}</pre>
+          <pre className="rounded-[8px] bg-[var(--code-bg)] p-3 font-mono text-[11px] leading-[15px] whitespace-pre-wrap break-words selectable max-h-80 overflow-auto">{JSON.stringify(l.json, null, 2)}</pre>
         </Section>
       )}
       <div className="px-5 py-4 hairline-t flex gap-2">
@@ -689,7 +689,7 @@ function EventInspector({ data: e }) {
   return (
     <>
       <Header title={e.reason} subtitle={`${e.kind} ${e.name}`} right={<Pill tone={e.type === 'Warning' ? 'orange' : 'gray'} strong>{e.type}</Pill>} />
-      {EXPLAIN[e.reason] && <div className="mx-5 mb-4 rounded-[14px] bg-fill-4 px-3.5 py-2.5 text-callout">{EXPLAIN[e.reason]}</div>}
+      {EXPLAIN[e.reason] && <div className="mx-5 mb-4 rounded-[10px] bg-fill-4 px-3.5 py-2.5 text-callout">{EXPLAIN[e.reason]}</div>}
       <Section title="Details">
         <KeyValue items={[['Message', e.message], ['Count', e.count], ['First seen', dayTime(e.firstAt)], ['Last seen', dayTime(e.at)], ['Reported by', e.source]]} />
       </Section>
@@ -746,7 +746,7 @@ export default function Inspector() {
   return (
     <aside className={cx('p-2 pl-0', isWin && 'pt-[54px]', floating ? 'absolute right-0 top-0 bottom-0 z-inspector pointer-events-none' : 'shrink-0 relative')} style={{ width: Math.min(440, width - 120) }}>
       {/* Docked, it's the sidebar's twin (same glass, same radius); floating over content it needs the denser glass. */}
-      <div key={`${ins.type}:${ins.id}`} className={cx('h-full rounded-[20px] overflow-y-auto animate-slide-right relative', floating ? 'glass-strong shadow-[var(--shadow-pop)] pointer-events-auto' : 'glass-panel')}>
+      <div key={`${ins.type}:${ins.id}`} className={cx('h-full rounded-[14px] overflow-y-auto animate-slide-right relative', floating ? 'glass-strong shadow-[var(--shadow-pop)] pointer-events-auto' : 'glass-panel')}>
         <button type="button" onClick={() => setState({ inspector: null })} className="no-drag absolute top-4 right-4 z-10 w-7 h-7 rounded-full bg-fill-3 hover:bg-fill-2 grid place-items-center text-label-2" aria-label="Close">
           <Icon name="x" size={12} strokeWidth={2.4} />
         </button>

@@ -167,12 +167,12 @@ export default function Select({
               id={listId}
               role="listbox"
               aria-label={ariaLabel || placeholder}
-              className="absolute rounded-[14px] bg-elevated shadow-[var(--shadow-pop),0_0_0_0.5px_var(--separator)] overflow-hidden animate-sheet flex flex-col"
+              className="absolute rounded-[10px] bg-elevated shadow-[var(--shadow-pop),0_0_0_0.5px_var(--separator)] overflow-hidden animate-sheet flex flex-col"
               style={{ left: pos.left, top: pos.top, bottom: pos.bottom, width: pos.width, maxHeight: pos.maxH, transformOrigin: pos.bottom != null ? 'bottom left' : 'top left' }}
             >
               {canSearch && (
                 <div className="p-1.5 hairline-b shrink-0">
-                  <label className="flex items-center gap-2 h-7 px-2 rounded-[9px] bg-fill-4">
+                  <label className="flex items-center gap-2 h-7 px-2 rounded-[7px] bg-fill-4">
                     <Icon name="search" size={13} className="text-label-3" />
                     <input autoFocus value={q} onChange={(e) => (setQ(e.target.value), setActive(0))} onKeyDown={onKey} placeholder="Filter…" aria-label="Filter" aria-controls={listId} aria-activedescendant={activeDescendant} spellCheck={false} className="flex-1 min-w-0 bg-transparent outline-none text-callout placeholder:text-label-3" />
                   </label>
@@ -197,16 +197,16 @@ export default function Select({
                         disabled={o.disabled}
                         onMouseEnter={() => setActive(i)}
                         onClick={() => choose(o)}
-                        className={cx('w-full flex items-center gap-2 px-2.5 py-1.5 rounded-[9px] text-left text-callout disabled:opacity-40', i === active ? 'bg-accent text-white' : 'text-label')}
+                        className={cx('w-full flex items-center gap-2 px-2.5 py-1.5 rounded-[7px] text-left text-callout disabled:opacity-40', i === active ? 'bg-fill-2 text-label' : 'text-label')}
                       >
                         <span className="w-3.5 shrink-0 grid place-items-center">{selected && <Icon name="check" size={13} strokeWidth={2.2} />}</span>
-                        {o.icon && <Icon name={o.icon} size={14} className={cx('shrink-0', i === active ? 'text-white' : 'text-label-2')} />}
+                        {o.icon && <Icon name={o.icon} size={14} className={cx('shrink-0', i === active ? 'text-label' : 'text-label-2')} />}
                         {o.dot && <StatusDot tone={o.dot} size={6} />}
                         <span className="min-w-0 flex-1">
                           <span className="block truncate">{o.label}</span>
-                          {o.description && <span className={cx('block truncate text-footnote', i === active ? 'text-white/80' : 'text-label-3')}>{o.description}</span>}
+                          {o.description && <span className={cx('block truncate text-footnote', i === active ? 'text-label-2' : 'text-label-3')}>{o.description}</span>}
                         </span>
-                        {o.meta != null && <span className={cx('text-footnote tabular shrink-0', i === active ? 'text-white/80' : 'text-label-3')}>{o.meta}</span>}
+                        {o.meta != null && <span className={cx('text-footnote tabular shrink-0', i === active ? 'text-label-2' : 'text-label-3')}>{o.meta}</span>}
                       </button>
                     </div>
                   );

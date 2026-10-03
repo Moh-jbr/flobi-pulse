@@ -483,7 +483,7 @@ export default function Logs() {
         </div>
       )}
 
-      <div className="flex-1 min-h-0 relative mx-6 mb-4 rounded-[18px] overflow-hidden bg-[var(--code-bg)] shadow-[var(--shadow-card)]">
+      <div className="flex-1 min-h-0 relative mx-6 mb-4 rounded-[12px] overflow-hidden bg-[var(--code-bg)] shadow-[var(--shadow-card)]">
         <VirtualList
           className="absolute inset-0 py-1 font-mono text-[11.5px] leading-[16px]"
           items={items}

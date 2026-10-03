@@ -348,7 +348,7 @@ after they start, then every hour, when the window comes back to the front (if
 the last check was more than 10 minutes ago) and when the computer wakes up.
 When there is one, an **Update available** button appears at the top. One click
 downloads it, checks its checksum, installs it where the app already lives and
-restarts. Settings and keys stay. There's also **Settings → Updates → Check now**.
+restarts. Settings and keys stay. There's also **Settings → General → Updates → Check now**.
 
 The builds aren't signed with paid certificates (that would cost money), so the
 **first** install shows a warning. Updates don't.

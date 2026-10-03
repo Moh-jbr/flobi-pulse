@@ -215,7 +215,8 @@ them right away after a restart.
      This is covered by tests.
 * **Few dependencies.** The shipped app has **no runtime npm dependencies**.
   HTTP, gRPC (for live tail), protobuf and JWT signing are built on Node's own
-  modules. Build tools only: Electron, electron-builder, Vite, React, Tailwind.
+  modules. Build tools only: Electron, electron-builder, Vite, React, Tailwind, and the Geist
+  fonts (bundled into the build, never fetched).
 * **Credentials** (service-account key, the optional database key for a database in another project, the Sentry, Cloudflare and GitHub tokens, the OpenRouter and fal keys) are encrypted with the OS keychain through Electron `safeStorage`.
 * **Shared settings** (project, cluster, uptime URLs) are in
   `config/team.config.json`, baked into every build. Each person can override them

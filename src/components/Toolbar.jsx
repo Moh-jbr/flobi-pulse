@@ -56,7 +56,7 @@ function UpdateButton() {
       title={tip}
       className={cx(
         'no-drag press relative overflow-hidden h-7 pl-2.5 pr-3 rounded-full inline-flex items-center gap-1.5 text-callout font-semibold disabled:pointer-events-none',
-        failed ? 'bg-orange-tint text-orange' : 'bg-accent text-white shadow-[0_1px_2px_rgb(0_0_0/0.12),inset_0_0.5px_0_rgb(255_255_255/0.35)] hover:brightness-110',
+        failed ? 'bg-orange-tint text-orange' : 'bg-accent text-on-accent hover:opacity-85',
       )}
     >
       {u.status === 'downloading' && <span className="absolute inset-y-0 left-0 bg-white/20" style={{ width: `${pct}%`, transition: 'width 300ms var(--ease-smooth)' }} />}
@@ -122,7 +122,7 @@ function AlertsButton() {
           {list.map((a) => {
             const look = alertLook(a);
             return (
-              <div key={a.id} className={cx('group p-2.5 rounded-[14px] hover:bg-fill-4 flex gap-2.5', (a.acked || a.muted || a.clearing) && 'opacity-60')}>
+              <div key={a.id} className={cx('group p-2.5 rounded-[10px] hover:bg-fill-4 flex gap-2.5', (a.acked || a.muted || a.clearing) && 'opacity-60')}>
                 <div className={cx('mt-0.5 w-6 h-6 rounded-full grid place-items-center shrink-0', look.bg)}>
                   <Icon name={look.icon} size={13} strokeWidth={2} className={look.fg} />
                 </div>

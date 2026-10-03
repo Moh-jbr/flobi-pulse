@@ -69,7 +69,7 @@ export default function CommandPalette() {
   let lastGroup = null;
   return createPortal(
     <div className="fixed inset-0 z-sheet no-drag" data-layer="palette" onMouseDown={(e) => e.target === e.currentTarget && close()} style={{ background: 'var(--scrim)' }}>
-      <div ref={box} role="dialog" aria-modal="true" aria-label="Search" tabIndex={-1} className="absolute left-1/2 top-[14%] -translate-x-1/2 w-[620px] max-w-[calc(100vw-32px)] glass-strong rounded-[24px] overflow-hidden animate-sheet outline-none">
+      <div ref={box} role="dialog" aria-modal="true" aria-label="Search" tabIndex={-1} className="absolute left-1/2 top-[14%] -translate-x-1/2 w-[620px] max-w-[calc(100vw-32px)] glass-strong rounded-[14px] overflow-hidden animate-sheet outline-none">
         <div className="flex items-center gap-3 px-5 h-14 hairline-b">
           <Icon name="search" size={19} className="text-label-2" />
           <input
@@ -114,9 +114,9 @@ export default function CommandPalette() {
                   data-i={i}
                   onMouseMove={() => setIdx(i)}
                   onClick={() => pick(it)}
-                  className={cx('w-full h-9 px-3 rounded-[12px] flex items-center gap-3 text-body text-left', i === idx ? 'bg-accent text-white' : '')}
+                  className={cx('w-full h-9 px-3 rounded-[8px] flex items-center gap-3 text-body text-left', i === idx ? 'bg-fill-2 text-label' : '')}
                 >
-                  <Icon name={it.icon} size={16} className={i === idx ? 'text-white' : 'text-accent'} />
+                  <Icon name={it.icon} size={16} className={i === idx ? 'text-label' : 'text-label-2'} />
                   <span className="truncate flex-1">{it.label}</span>
                   {it.podState && <StatusDot tone={STATE_TONE[it.podState]} size={7} />}
                   {it.health && i !== idx && <HealthPill health={it.health} />}

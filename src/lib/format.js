@@ -74,11 +74,11 @@ export function clock(ts, withSeconds = true) {
 
 const DAY = new Intl.DateTimeFormat(undefined, { weekday: 'short', day: 'numeric', month: 'short', numberingSystem: 'latn' });
 
-/** "Today", "Yesterday" or "Sat 27 Sep" (the date part of dayTime). */
-export function day(ts) {
+/** "Today", "Yesterday" or "Sat 27 Sep" (the date part of dayTime), counted from `at` (now by default). */
+export function day(ts, at = Date.now()) {
   const d = toDate(ts);
   if (!d) return '—';
-  const now = new Date();
+  const now = new Date(at);
   const same = (a, b) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
   if (same(d, now)) return 'Today';
   if (same(d, new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1))) return 'Yesterday';
@@ -109,7 +109,7 @@ export function dayTime(ts) {
 export function coverage(since, now = Date.now(), days = 7) {
   if (since == null || !toDate(since)) return { full: false, label: '', sentence: '' };
   if (now - since >= days * 86_400_000 - 60_000) return { full: true, label: `in ${days} days`, sentence: `in the last ${days} days` };
-  const d = day(since);
+  const d = day(since, now);
   const text = `since ${d === 'Today' ? '' : `${d === 'Yesterday' ? 'yesterday' : d} `}${clockHM(since)}`;
   return { full: false, label: text, sentence: text };
 }

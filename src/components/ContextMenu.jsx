@@ -76,7 +76,7 @@ export default function ContextMenu() {
         ref={box}
         role="menu"
         onMouseDown={(e) => (e.preventDefault(), e.stopPropagation())}
-        className="absolute min-w-[180px] p-1 rounded-[12px] bg-elevated shadow-[var(--shadow-pop),0_0_0_0.5px_var(--separator)] animate-fade"
+        className="absolute min-w-[180px] p-1 rounded-[8px] bg-elevated shadow-[var(--shadow-pop),0_0_0_0.5px_var(--separator)] animate-fade"
         style={{ left: pos?.left ?? menu.x, top: pos?.top ?? menu.y, visibility: pos ? 'visible' : 'hidden' }}
       >
         {menu.items.map((it, i) =>
@@ -89,11 +89,11 @@ export default function ContextMenu() {
               role="menuitem"
               disabled={it.disabled}
               onClick={() => run(it)}
-              className={cx('group w-full h-7 px-2.5 rounded-[8px] flex items-center gap-2 text-callout text-left text-label', it.disabled ? 'opacity-35' : 'hover:bg-accent hover:text-white')}
+              className={cx('group w-full h-7 px-2.5 rounded-[8px] flex items-center gap-2 text-callout text-left text-label', it.disabled ? 'opacity-35' : 'hover:bg-fill-2')}
             >
               <span className="w-3.5 grid place-items-center shrink-0">{it.icon && <Icon name={it.icon} size={13} />}</span>
               <span className="flex-1 truncate">{it.label}</span>
-              {it.keys && <span className={cx('text-footnote text-label-3 tabular', !it.disabled && 'group-hover:text-white/80')}>{shortcut(it.keys)}</span>}
+              {it.keys && <span className={cx('text-footnote text-label-3 tabular', !it.disabled && 'group-hover:text-label-2')}>{shortcut(it.keys)}</span>}
             </button>
           ),
         )}

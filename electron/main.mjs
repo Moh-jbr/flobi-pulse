@@ -312,7 +312,7 @@ function createWindow() {
     title: 'Flobi Pulse',
     icon: path.join(__dirname, 'assets', 'icon.png'),
     // Same as --bg-content, so the first paint doesn't flash a different shade.
-    backgroundColor: dark ? '#161618' : '#ffffff',
+    backgroundColor: dark ? '#000000' : '#ffffff',
     titleBarStyle: isMac ? 'hiddenInset' : 'hidden',
     ...(isMac ? { trafficLightPosition: { x: 22, y: 22 } } : {}),
     ...(isWin ? { titleBarOverlay: { color: '#00000000', symbolColor: dark ? '#f5f5f7' : '#1d1d1f', height: 52 } } : {}),

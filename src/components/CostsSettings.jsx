@@ -30,11 +30,11 @@ function vendorStatus(v) {
   return { tone: 'green', text: v.okAt ? `Read ${ago(v.okAt)}` : 'Connected' };
 }
 
-function Head({ icon, tone, title, sub, vendor }) {
+function Head({ icon, title, sub, vendor }) {
   const st = vendorStatus(vendor);
   return (
     <div className="flex items-center gap-2">
-      <div className={cx('w-7 h-7 rounded-[8px] grid place-items-center text-white shrink-0', tone)}>
+      <div className={cx('w-7 h-7 rounded-[8px] grid place-items-center text-label-2 bg-fill-3 shrink-0')}>
         <Icon name={icon} size={15} strokeWidth={1.9} />
       </div>
       <div className="flex-1 min-w-0">
@@ -80,7 +80,7 @@ function BillingTable({ info, vendor }) {
   const problem = vendor && PROBLEM.has(vendor.status) ? vendor.message : null;
   return (
     <div className="px-4 py-4 flex flex-col gap-3">
-      <Head icon="cloud" tone="bg-accent" title="Google Cloud" sub="The Cloud Billing export table in BigQuery (Google AI Studio’s Gemini API is in it too)" vendor={saved ? vendor : null} />
+      <Head icon="cloud" title="Google Cloud" sub="The Cloud Billing export table in BigQuery (Google AI Studio’s Gemini API is in it too)" vendor={saved ? vendor : null} />
       <div className="flex items-center gap-2">
         <TextField mono value={value} onChange={(v) => (setValue(v), save.clear())} onKeyDown={(e) => e.key === 'Enter' && dirty && save.run({ bigQueryTable: value })} placeholder="project.dataset.gcp_billing_export_v1_…" aria-label="Billing export table" className="flex-1" />
         <Button variant="primary" loading={save.busy} disabled={!dirty} onClick={() => save.run({ bigQueryTable: value })}>
@@ -108,7 +108,7 @@ function CloudflareBilling({ info, vendor }) {
       : `Plans${cf.accountId ? ' and usage-based charges (Workers, R2…)' : ''} with the Cloudflare token above. It needs Account → Billing → Read too.${cf.accountId ? '' : ' Set the Account ID above to include account plans and usage.'}`;
   return (
     <div className="px-4 py-4 flex flex-col gap-2">
-      <Head icon="globe" tone="bg-orange" title="Cloudflare" sub="Plans and usage-based billing" vendor={cf.hasToken ? vendor : null} />
+      <Head icon="globe" title="Cloudflare" sub="Plans and usage-based billing" vendor={cf.hasToken ? vendor : null} />
       <div className={cx('text-subheadline', vendor?.status === 'forbidden' ? 'text-orange' : 'text-label-3')}>{text}</div>
     </div>
   );
@@ -129,7 +129,7 @@ function GitHubBilling({ info, vendor }) {
   const problem = vendor && PROBLEM.has(vendor.status) ? vendor.message : null;
   return (
     <div className="px-4 py-4 flex flex-col gap-3">
-      <Head icon="tag" tone="bg-gray" title="GitHub" sub="Billing usage and seats" vendor={hasToken && who ? vendor : null} />
+      <Head icon="tag" title="GitHub" sub="Billing usage and seats" vendor={hasToken && who ? vendor : null} />
       <div className="grid grid-cols-[120px_minmax(0,1fr)] gap-x-3 gap-y-2 items-center text-callout">
         <span className="text-label-2">Billed to</span>
         <Segmented
@@ -297,7 +297,7 @@ function Items({ info }) {
   const submit = () => save.run({ items: list.map((it) => ({ ...it, amount: String(it.amount).trim() })) }, () => setDirty(false));
   return (
     <div className="px-4 py-4 flex flex-col gap-3">
-      <Head icon="receipt" tone="bg-teal" title="Paid without a billing API" sub="Replicate, Sentry, Clerk and anything else: typed in once, counted every month" />
+      <Head icon="receipt" title="Paid without a billing API" sub="Replicate, Sentry, Clerk and anything else: typed in once, counted every month" />
       {list.map((it, i) => (
         <div key={it.id} className={cx('flex flex-col gap-1.5', i > 0 && 'pt-3 hairline-t')}>
           <div className="grid grid-cols-[112px_minmax(0,1fr)_88px_56px_118px_28px] gap-2 items-center">
@@ -360,7 +360,7 @@ function Rates({ info, costs }) {
   const dirty = codes.some((c) => String(rates[c] ?? '') !== String(saved[c] ?? ''));
   return (
     <div className="px-4 py-4 flex flex-col gap-3">
-      <Head icon="refresh" tone="bg-indigo" title="Exchange rates" sub={`Totals are in ${costs.currency}; other currencies count at the rate typed here (the app doesn’t look rates up)`} />
+      <Head icon="refresh" title="Exchange rates" sub={`Totals are in ${costs.currency}; other currencies count at the rate typed here (the app doesn’t look rates up)`} />
       <div className="flex flex-wrap gap-x-6 gap-y-2">
         {codes.map((c) => (
           <label key={c} className="inline-flex items-center gap-2 text-callout text-label-2">

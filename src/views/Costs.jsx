@@ -15,16 +15,16 @@ import { money, monthName, dateShort, ago, clockHM, bytes } from '../lib/format.
 import { BQ_MIN_KEEP_DAYS } from '../../electron/core/engine/costs.mjs';
 
 const LOOK = {
-  gcp: { icon: 'cloud', tone: 'bg-accent' },
-  cloudflare: { icon: 'globe', tone: 'bg-orange' },
-  github: { icon: 'tag', tone: 'bg-gray' },
-  sentry: { icon: 'errors', tone: 'bg-purple' },
-  clerk: { icon: 'person', tone: 'bg-indigo' },
-  aistudio: { icon: 'sparkles', tone: 'bg-accent' },
-  openrouter: { icon: 'traffic', tone: 'bg-indigo' },
-  fal: { icon: 'bolt', tone: 'bg-purple' },
-  replicate: { icon: 'stack', tone: 'bg-gray' },
-  other: { icon: 'receipt', tone: 'bg-teal' },
+  gcp: { icon: 'cloud' },
+  cloudflare: { icon: 'globe' },
+  github: { icon: 'tag' },
+  sentry: { icon: 'errors' },
+  clerk: { icon: 'person' },
+  aistudio: { icon: 'sparkles' },
+  openrouter: { icon: 'traffic' },
+  fal: { icon: 'bolt' },
+  replicate: { icon: 'stack' },
+  other: { icon: 'receipt' },
 };
 
 // What the lines of a vendor are, for the table's first column.
@@ -204,7 +204,7 @@ function LowBalance({ v }) {
   );
 }
 const SettingsButton = () => (
-  <Button size="sm" variant="tinted" icon="settings" onClick={() => navigate('settings')}>
+  <Button size="sm" variant="tinted" icon="settings" onClick={() => navigate({ to: 'settings', tab: 'costs' })}>
     Settings
   </Button>
 );
@@ -401,7 +401,7 @@ function BigQueryStorage({ s }) {
           <p className="selectable">
             To keep only the last {s.keepDays} days, run this once in BigQuery (Google Cloud console → BigQuery → Query editor). From then on BigQuery deletes the older days by itself, for free{s.settlesAt ? `, and the table stays around ${bytes(s.settlesAt)}` : ''}.
           </p>
-          <pre className="font-mono text-[11.5px] leading-snug p-2.5 rounded-[10px] bg-fill-3 text-label whitespace-pre-wrap break-all selectable">{s.command}</pre>
+          <pre className="font-mono text-[11.5px] leading-snug p-2.5 rounded-[8px] bg-fill-3 text-label whitespace-pre-wrap break-all selectable">{s.command}</pre>
           <div className="flex items-center justify-between gap-3">
             <span className="text-footnote text-label-3">Flobi Pulse never runs it: it only reads.</span>
             <CopyButton text={s.command} label="Copy command" />
@@ -445,7 +445,7 @@ function VendorSection({ v, c, now }) {
   return (
     <section className="mb-7 animate-rise">
       <div className="flex items-end gap-3 mb-2.5 px-1">
-        <div className={cx('w-8 h-8 rounded-[10px] grid place-items-center text-white shrink-0 mb-0.5', look.tone)}>
+        <div className={cx('w-8 h-8 rounded-[8px] grid place-items-center text-label-2 bg-fill-3 shrink-0 mb-0.5')}>
           <Icon name={look.icon} size={16} strokeWidth={1.9} />
         </div>
         <div className="min-w-0 flex-1">

@@ -61,7 +61,7 @@ function ConnectCard({ title, message }) {
         <div className="text-headline font-semibold">{title}</div>
         <div className="text-callout text-label-2">{message}</div>
       </div>
-      <Button variant="tinted" onClick={() => navigate('settings')}>
+      <Button variant="tinted" onClick={() => navigate({ to: 'settings', tab: 'integrations' })}>
         Connect
       </Button>
     </Card>

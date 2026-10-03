@@ -137,7 +137,7 @@ export default function Crashes() {
           <Card pad={false} className="p-1.5">
             {!active.length && <Empty compact title="No active alerts" message="Everything is behaving." />}
             {active.map((a) => (
-              <div key={a.id} className={cx('group flex gap-3 p-2.5 rounded-[12px] hover:bg-fill-4', (a.acked || a.muted || a.clearing) && 'opacity-60')}>
+              <div key={a.id} className={cx('group flex gap-3 p-2.5 rounded-[8px] hover:bg-fill-4', (a.acked || a.muted || a.clearing) && 'opacity-60')}>
                 <StatusDot tone={SEV_TONE[a.severity]} size={9} className="mt-1.5" pulse={a.severity === 'critical' && !a.acked && !a.clearing} />
                 <button type="button" onClick={() => navigate(a.view || 'overview')} className="min-w-0 flex-1 text-left">
                   <AlertText a={a} />

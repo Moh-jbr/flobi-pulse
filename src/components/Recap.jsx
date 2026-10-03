@@ -138,7 +138,7 @@ export function IncidentList({ incidents, onNavigate }) {
             {list.map((inc) => (
               <div key={inc.id} className="relative group">
                 <span className={cx('absolute -left-[17px] top-3.5 w-[11px] h-[11px] rounded-full ring-[3px] ring-[var(--bg-elevated)]', TONE[SEV_TONE[inc.severity]].dot)} />
-                <button type="button" onClick={() => inc.view && onNavigate?.(inc.view)} className="w-full text-left p-2.5 rounded-[14px] hover:bg-fill-4 flex gap-3">
+                <button type="button" onClick={() => inc.view && onNavigate?.(inc.view)} className="w-full text-left p-2.5 rounded-[10px] hover:bg-fill-4 flex gap-3">
                   <div className="w-12 shrink-0 text-callout text-label-2 tabular pt-0.5">{clock(inc.start, false)}</div>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
@@ -164,7 +164,7 @@ export function RecapExtras({ recap }) {
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
       {recap.deploys?.length > 0 && (
-        <div className="rounded-[16px] bg-fill-4 p-3.5">
+        <div className="rounded-[12px] bg-fill-4 p-3.5">
           <div className="text-headline font-semibold mb-2 flex items-center gap-1.5">
             <Icon name="rocket" size={14} className="text-accent" /> Deploys
           </div>
@@ -177,7 +177,7 @@ export function RecapExtras({ recap }) {
         </div>
       )}
       {recap.scaling?.length > 0 && (
-        <div className="rounded-[16px] bg-fill-4 p-3.5">
+        <div className="rounded-[12px] bg-fill-4 p-3.5">
           <div className="text-headline font-semibold mb-2 flex items-center gap-1.5">
             <Icon name="scale" size={14} className="text-accent" /> Autoscaling
           </div>

@@ -14,7 +14,7 @@ const MARKDOWN_MAX = 1000;
 // second, and a component declared inside would be rebuilt each time (losing hover).
 function Item({ icon, label, sub, disabled, onClick, first }) {
   return (
-    <button type="button" role="menuitem" disabled={disabled} data-autofocus={first && !disabled ? '' : undefined} onClick={onClick} className="w-full flex items-center gap-3 px-3 py-2 rounded-[10px] text-left hover:bg-fill-4 focus-visible:bg-fill-4 disabled:opacity-40">
+    <button type="button" role="menuitem" disabled={disabled} data-autofocus={first && !disabled ? '' : undefined} onClick={onClick} className="w-full flex items-center gap-3 px-3 py-2 rounded-[8px] text-left hover:bg-fill-4 focus-visible:bg-fill-4 disabled:opacity-40">
       <Icon name={icon} size={16} className="text-accent shrink-0" />
       <span className="min-w-0 flex-1">
         <span className="block text-body">{label}</span>

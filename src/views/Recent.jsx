@@ -156,7 +156,7 @@ export default function Recent() {
               const mute = muteOf(a);
               return (
                 <div key={a.id} className={cx('group flex gap-3 p-4', !a.open ? 'opacity-80' : a.clearing && 'opacity-60')}>
-                  <div className={cx('mt-0.5 w-8 h-8 rounded-[10px] grid place-items-center shrink-0', live ? sev.bg : 'bg-fill-3')}>
+                  <div className={cx('mt-0.5 w-8 h-8 rounded-[8px] grid place-items-center shrink-0', live ? sev.bg : 'bg-fill-3')}>
                     <Icon name={live ? sev.icon : a.fromLogs ? 'history' : 'check'} size={15} strokeWidth={2} className={live ? sev.fg : 'text-label-3'} />
                   </div>
                   <button type="button" className="min-w-0 flex-1 text-left" onClick={() => a.view && navigate(a.view)} disabled={!a.view}>
