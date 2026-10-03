@@ -12,6 +12,37 @@ const MIN = 60_000;
 const HOUR = 60 * MIN;
 const iso = (ms) => new Date(ms).toISOString();
 
+/**
+ * Deploys in a list of events ({ reason, objectKind, objectName, message, at }):
+ * a Deployment scaling up a replica set while another of its replica sets is
+ * scaled down within 15 minutes. An autoscaler resizing one replica set is not
+ * a deploy.
+ * @returns {{service: string, at: number, rs: string}[]}
+ */
+export function deploysOf(events) {
+  const out = [];
+  const byDeploy = new Map();
+  for (const e of events) {
+    if (e.reason !== 'ScalingReplicaSet' || e.objectKind !== 'Deployment') continue;
+    const m = e.message.match(/Scaled (up|down) replica set (\S+) (?:to|from \d+ to) (\d+)/);
+    if (!m) continue;
+    const list = byDeploy.get(e.objectName) || [];
+    list.push({ at: e.at, dir: m[1], rs: m[2], to: Number(m[3]) });
+    byDeploy.set(e.objectName, list);
+  }
+  for (const [svc, list] of byDeploy) {
+    const seenRs = new Set();
+    for (const x of list) {
+      if (x.dir === 'up' && !seenRs.has(x.rs)) {
+        const downOther = list.some((y) => y.dir === 'down' && y.rs !== x.rs && Math.abs(y.at - x.at) < 15 * MIN);
+        if (downOther) out.push({ service: svc, at: x.at, rs: x.rs });
+      }
+      seenRs.add(x.rs);
+    }
+  }
+  return out;
+}
+
 export function serviceFromObject(kind, name) {
   if (!name) return null;
   if (kind === 'Pod') return workloadFromPodName(name) || name;
@@ -430,25 +461,7 @@ export function recapFromData(o, data = {}, notes = []) {
   }
 
   // ── 4. Deploys and autoscaling ────────────────────────────────────────────
-  const rs = events.filter((e) => e.reason === 'ScalingReplicaSet' && e.objectKind === 'Deployment');
-  const byDeploy = new Map();
-  for (const e of rs) {
-    const m = e.message.match(/Scaled (up|down) replica set (\S+) (?:to|from \d+ to) (\d+)/);
-    if (!m) continue;
-    const list = byDeploy.get(e.objectName) || [];
-    list.push({ at: e.at, dir: m[1], rs: m[2], to: Number(m[3]) });
-    byDeploy.set(e.objectName, list);
-  }
-  for (const [svc, list] of byDeploy) {
-    const seenRs = new Set();
-    for (const x of list) {
-      if (x.dir === 'up' && !seenRs.has(x.rs)) {
-        const downOther = list.some((y) => y.dir === 'down' && y.rs !== x.rs && Math.abs(y.at - x.at) < 15 * MIN);
-        if (downOther) deploys.push({ service: svc, at: x.at, rs: x.rs });
-      }
-      seenRs.add(x.rs);
-    }
-  }
+  deploys.push(...deploysOf(events));
   const rescales = events.filter((e) => e.reason === 'SuccessfulRescale');
   const scaleBySvc = new Map();
   for (const e of rescales) {

@@ -585,7 +585,8 @@ function legacyKnownErrorsInUse() {
 /**
  * What gets saved together with lastSeenAt: known error types, each pod's
  * restart count so the next recap can tell exactly what restarted in between,
- * and what's silenced or muted. Live only: nothing from demo mode is saved.
+ * what's silenced or muted, and the service cards' last hour of CPU and memory.
+ * Live only: nothing from demo mode is saved.
  */
 function awayState() {
   if (!pipeline || mode !== 'live') return {};
@@ -593,6 +594,8 @@ function awayState() {
   const snap = pipeline.restartSnapshot();
   if (snap) out.restartSnapshot = snap;
   out.alertSilence = pipeline.alerts.stateToSave();
+  const usage = pipeline.usageToSave();
+  if (usage) out.usageLines = usage;
   return out;
 }
 
@@ -618,7 +621,8 @@ async function stopConnectorNow() {
   // restart (e.g. after waking up) still knows where the recap should start.
   if (pipeline && mode === 'live') {
     clearTimeout(historyTimer);
-    await stateStore.update({ ...knownErrorsToSave(pipeline), alertHistory: pipeline.historyToSave(), alertSilence: pipeline.alerts.stateToSave() });
+    const usage = pipeline.usageToSave();
+    await stateStore.update({ ...knownErrorsToSave(pipeline), alertHistory: pipeline.historyToSave(), alertSilence: pipeline.alerts.stateToSave(), ...(usage && { usageLines: usage }) });
   } else if (pipeline && mode === 'demo') demoAlertState = pipeline.alerts.stateToSave();
   pipeline?.destroy();
   pipeline = null;
@@ -635,6 +639,8 @@ async function startLiveNow({ recapSince } = {}) {
   // Separate copies: the pipeline adds to its map as errors come in, while the
   // recap compares against what was known before.
   const p = newPipeline('live', { knownErrors: { ...st.knownErrorsV2 }, legacyKnownErrors: legacy });
+  // The cards' lines carry on from where the last session left them, up to an hour back.
+  p.restoreUsage(st.usageLines);
   connector = new LiveConnector({ config: config(), auth, dbAuth: databaseAuth(), pipeline: p, settings: settingsStore.get(), lastSeenAt: recapSince ?? st.lastSeenAt ?? null, knownErrors: { ...st.knownErrorsV2 }, legacyKnownErrors: legacy, restartSnapshot: st.restartSnapshot || null, pastWeekCache, connectivity });
   await connector.start();
   let lastBeat = Date.now();
