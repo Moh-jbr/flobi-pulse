@@ -63,25 +63,24 @@ const SOURCES = [
   ['sentry', 'Sentry'],
   ['cloudflare', 'Cloudflare'],
 ];
-const SOURCES_SHOWN = 3;
+const sourceTone = (st) => (st === 'degraded' || st === 'unavailable' ? 'orange' : 'red');
+const SOURCE_FINE = new Set([undefined, null, 'ok', 'streaming', 'connecting', 'off', 'offline']);
 
-/** One row: the first few data sources with their status, "+2" for the rest (all of them in the tooltip). Opens Settings. */
-function SourceDots({ sources }) {
-  const tone = (st) => (!st ? 'gray' : st === 'ok' || st === 'streaming' ? 'green' : st === 'connecting' ? 'accent' : st === 'off' || st === 'offline' ? 'gray' : st === 'degraded' || st === 'unavailable' ? 'orange' : 'red');
+/** Nothing while every data source works; a source that stops working gets a line here (it opens Settings). */
+function SourceTrouble({ sources }) {
+  const broken = SOURCES.filter(([k]) => !SOURCE_FINE.has(sources?.[k]?.status));
+  if (!broken.length) return null;
   return (
     <button
       type="button"
       onClick={() => navigate('settings')}
-      title={SOURCES.map(([k, l]) => `${l}: ${sources?.[k]?.status || 'waiting'}${sources?.[k]?.message ? ` — ${sources[k].message}` : ''}`).join('\n')}
-      className="no-drag w-full h-6 px-2.5 rounded-[8px] flex items-center gap-2.5 text-footnote text-label-3 hover:text-label-2 hover:bg-fill-4 whitespace-nowrap overflow-hidden"
+      title={broken.map(([k, l]) => `${l}: ${sources[k].status}${sources[k].message ? ` — ${sources[k].message}` : ''}`).join('\n')}
+      className="no-drag w-full h-6 mb-2 px-2.5 rounded-[8px] flex items-center gap-2 text-footnote text-label-2 hover:bg-fill-4 whitespace-nowrap overflow-hidden"
     >
-      {SOURCES.slice(0, SOURCES_SHOWN).map(([k, l]) => (
-        <span key={k} className="inline-flex items-center gap-1 min-w-0">
-          <StatusDot tone={tone(sources?.[k]?.status)} size={6} />
-          <span className="truncate">{l}</span>
-        </span>
-      ))}
-      <span className="ml-auto shrink-0">+{SOURCES.length - SOURCES_SHOWN}</span>
+      <StatusDot tone={broken.some(([k]) => sourceTone(sources[k].status) === 'red') ? 'red' : 'orange'} size={6} />
+      <span className="truncate">
+        {broken.length === 1 ? `${broken[0][1]} isn’t working` : `${broken.map(([, l]) => l).join(', ')} aren’t working`}
+      </span>
     </button>
   );
 }
@@ -218,8 +217,8 @@ export default function Sidebar() {
         </nav>
 
         <div className="no-drag shrink-0 px-2 pb-2 pt-2 hairline-t">
-          <SourceDots sources={sources} />
-          <div className="mt-2 flex items-center gap-2.5 py-1.5 pl-2.5 pr-1 rounded-[8px] hover:bg-fill-4 transition-colors">
+          <SourceTrouble sources={sources} />
+          <div className="flex items-center gap-2.5 py-1.5 pl-2.5 pr-1 rounded-[8px] hover:bg-fill-4 transition-colors">
             <div className="w-7 h-7 rounded-full bg-fill-3 text-label-2 grid place-items-center text-subheadline font-semibold shrink-0">{initials}</div>
             <div className="min-w-0 flex-1">
               <div className="text-callout font-medium truncate">{identity?.name || 'Signed in'}</div>
