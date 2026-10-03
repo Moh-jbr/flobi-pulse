@@ -197,6 +197,12 @@
   }
 }
 
+/* Compact (Settings → Appearance → Density): every padding, gap and height on
+   Tailwind's spacing scale shrinks by a fifth, so more fits on every page. */
+:root[data-density='compact'] {
+  --spacing: 0.2rem;
+}
+
 @layer base {
   html,
   body,

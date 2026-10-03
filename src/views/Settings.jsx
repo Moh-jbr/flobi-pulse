@@ -529,7 +529,7 @@ export default function Settings() {
                 ]}
               />
             </Row>
-            <Row label="Density" detail="Row height in tables and logs">
+            <Row label="Density" detail="Compact tightens spacing on every page and shortens rows in logs and traffic">
               <Segmented
                 value={s.appearance.density}
                 onChange={(v) => set({ appearance: { density: v } })}

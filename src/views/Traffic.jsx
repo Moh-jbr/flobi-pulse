@@ -432,7 +432,7 @@ export default function Traffic() {
     return c;
   }, [stats?.perSecond, stats?.byClass]);
 
-  const rh = document.documentElement.dataset.density === 'compact' ? 26 : 30;
+  const rh = useStore((s) => s.info?.settings?.appearance?.density) === 'compact' ? 26 : 30;
   const src = paused?.rows || feed.all;
   const filtering = status !== 'all' || host !== 'all' || !!service || slow || q.trim() !== '';
   const clearFilters = () => {

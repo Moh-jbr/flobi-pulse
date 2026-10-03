@@ -144,8 +144,8 @@ export default function Sidebar() {
                   const active = view === it.id;
                   const b = badges[it.id];
                   return (
-                    <button key={it.id} type="button" onClick={() => navigate(it.id)} title={b ? `${it.label} · ${b.text}` : it.label} aria-label={it.label} className={cx('relative w-11 h-10 [@media(max-height:720px)]:h-8 rounded-[8px] grid place-items-center transition-colors duration-150', active ? 'bg-fill-2' : 'hover:bg-fill-4')}>
-                      <Icon name={it.icon} size={18} className={active ? 'text-label' : 'text-label-3'} strokeWidth={1.7} />
+                    <button key={it.id} type="button" onClick={() => navigate(it.id)} title={b ? `${it.label} · ${b.text}` : it.label} aria-label={it.label} className={cx('group relative w-11 h-10 [@media(max-height:720px)]:h-8 rounded-[8px] grid place-items-center transition-colors duration-150', active ? 'bg-fill-2' : 'hover:bg-fill-4')}>
+                      <Icon name={it.icon} size={18} className={cx('transition-colors duration-150', active ? 'text-label' : 'text-label-3 group-hover:text-label')} strokeWidth={1.7} />
                       {b && (b.tone === 'red' || b.tone === 'orange') && <span className={cx('absolute top-1 right-1 min-w-[16px] h-4 px-1 rounded-full text-[10px] leading-4 font-semibold text-center tabular', b.tone === 'red' ? 'bg-red text-white' : 'bg-orange text-black')}>{b.text}</span>}
                     </button>
                   );
@@ -201,9 +201,9 @@ export default function Sidebar() {
                     key={it.id}
                     type="button"
                     onClick={() => navigate(it.id)}
-                    className={cx('w-full h-8 px-2.5 rounded-[8px] flex items-center gap-2.5 text-body transition-colors duration-150', active ? 'bg-fill-3 text-label font-medium' : 'text-label-2 hover:bg-fill-4 hover:text-label')}
+                    className={cx('group w-full h-8 px-2.5 rounded-[8px] flex items-center gap-2.5 text-body transition-colors duration-150', active ? 'bg-fill-3 text-label font-medium' : 'text-label-2 hover:bg-fill-4 hover:text-label')}
                   >
-                    <Icon name={it.icon} size={16} className={active ? 'text-label' : 'text-label-3'} strokeWidth={1.7} />
+                    <Icon name={it.icon} size={16} className={cx('transition-colors duration-150', active ? 'text-label' : 'text-label-3 group-hover:text-label')} strokeWidth={1.7} />
                     <span className="flex-1 text-left truncate">{it.label}</span>
                     {b && (
                       <span className={cx('tabular text-subheadline', b.tone === 'red' ? 'min-w-[18px] h-[18px] px-1.5 rounded-full bg-red text-white font-semibold grid place-items-center' : b.tone === 'orange' ? 'min-w-[18px] h-[18px] px-1.5 rounded-full bg-orange text-black font-semibold grid place-items-center' : 'text-label-3')}>

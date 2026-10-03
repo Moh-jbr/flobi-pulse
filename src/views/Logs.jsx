@@ -353,7 +353,7 @@ export default function Logs() {
     setFollow(true);
   };
 
-  const rh = document.documentElement.dataset.density === 'compact' ? 22 : 26;
+  const rh = useStore((s) => s.info?.settings?.appearance?.density) === 'compact' ? 22 : 26;
   const serviceOptions = services.map((s) => s.name).sort();
   const filtering = level !== 'all' || q.trim() !== '';
   const clearFilters = () => {
