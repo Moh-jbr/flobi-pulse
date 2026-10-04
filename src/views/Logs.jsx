@@ -195,7 +195,8 @@ export default function Logs() {
     if (params.pod) setScope({ kind: 'pod', pod: params.pod, service: params.service });
     else if (params.service) setScope({ kind: 'service', service: params.service });
     if (params.level) setLevel(params.level);
-    if (params.from) runHistory({ from: params.from, until: params.until, service: params.service, pod: params.pod, level: params.level });
+    if (params.q != null) setQ(params.q);
+    if (params.from) runHistory({ from: params.from, until: params.until, service: params.service, pod: params.pod, level: params.level, text: params.q || undefined });
   }, [params?.at]);
 
   const podList = useMemo(() => pods.filter((p) => p.state !== 'done' && !p.terminal), [pods.map((p) => `${p.name}:${p.state === 'done' || !!p.terminal}`).join()]);

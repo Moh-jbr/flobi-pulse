@@ -383,6 +383,7 @@ export default function Traffic() {
   useEffect(() => {
     if (params?.filter?.status) setStatus(params.filter.status);
     if (params?.filter?.service !== undefined) setService(params.filter.service || '');
+    if (params?.filter?.q != null) setQ(params.filter.q);
   }, [params?.at]);
 
   const hosts = useMemo(() => {

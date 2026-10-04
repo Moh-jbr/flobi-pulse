@@ -10,6 +10,7 @@ import { CloudSqlClient, parseConnectionName } from '../sources/cloudsql.mjs';
 import { SentryClient, explainSentryError } from '../sources/sentry.mjs';
 import { CloudflareClient, summarizeEdge, isNoAccess } from '../sources/cloudflare.mjs';
 import { UptimeMonitor } from '../sources/uptime.mjs';
+import { pagesUptimeTargets } from './pages-uptime.mjs';
 import { listCloudRunServices } from '../sources/cloudrun.mjs';
 import { lookupDomain } from '../sources/dns.mjs';
 import { normalizeEntry, k8sLogLine } from './normalize.mjs';
@@ -613,6 +614,7 @@ export class LiveConnector {
       if (this.config.cloudflare.accountId && (!this._pagesAt || now - this._pagesAt > 5 * MIN)) {
         patch.pages = await this.cloudflare.pagesProjects().catch((e) => (notes.push(`Pages: ${e.message}`), this.pipeline.cloudflare.pages));
         this._pagesAt = now;
+        this.syncPagesUptime(patch.pages);
       }
       if (notes.length) {
         patch.status = 'degraded';
@@ -629,10 +631,26 @@ export class LiveConnector {
 
   // ── Uptime ───────────────────────────────────────────────────────────────
   startUptime() {
-    const targets = this.config.uptime || [];
+    const targets = this.uptimeTargets();
     this.pipeline.setUptimeTargets(targets);
     this.uptime = new UptimeMonitor({ targets, onResult: (t, r) => this.pipeline.setUptime(t, r), isOffline: this.connectivity ? (o) => this.connectivity.offline(o) : null }).start();
     this.pipeline.setSource('uptime', 'ok');
+  }
+
+  /** The configured checks, plus one for each Cloudflare Pages project they leave out. */
+  uptimeTargets() {
+    const configured = this.config.uptime || [];
+    return [...configured, ...pagesUptimeTargets(this._pages, configured)];
+  }
+
+  /** New Pages projects get a check; one that's gone loses the check it was given. */
+  syncPagesUptime(pages) {
+    this._pages = pages || [];
+    if (!this.uptime) return;
+    const targets = this.uptimeTargets();
+    if (targets.map((t) => `${t.id} ${t.url}`).join() === this.uptime.targets.map((t) => `${t.id} ${t.url}`).join()) return;
+    this.uptime.setTargets(targets);
+    this.pipeline.setUptimeTargets(targets);
   }
 
   // ── On-demand ────────────────────────────────────────────────────────────

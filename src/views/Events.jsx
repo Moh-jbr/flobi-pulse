@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useStore, inspect } from '../lib/store.js';
 import { ViewScroll } from '../components/Toolbar.jsx';
 import { Card, Segmented, SearchField, Empty, Button, cx, useNow, Pill } from '../components/ui.jsx';
@@ -41,7 +41,11 @@ export default function Events() {
   const now = useNow(15_000);
   const [type, setType] = useState('all');
   const [kind, setKind] = useState('all');
-  const [q, setQ] = useState('');
+  const params = useStore((s) => s.nav.params);
+  const [q, setQ] = useState(params?.q || '');
+  useEffect(() => {
+    if (params?.q != null) setQ(params.q);
+  }, [params?.at]);
 
   const kinds = useMemo(() => [...new Set(events.map((e) => e.kind).filter(Boolean))].sort(), [events]);
   const list = useMemo(() => {

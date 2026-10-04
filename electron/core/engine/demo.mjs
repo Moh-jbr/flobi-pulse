@@ -5,6 +5,7 @@ import { normalizeEntry, k8sLogLine } from './normalize.mjs';
 import { fmtDuration } from './recap.mjs';
 import { loadPastWeek, processSlice } from './backfill.mjs';
 import { lastMonths, DEFAULT_COSTS } from './costs.mjs';
+import { pagesUptimeTargets } from './pages-uptime.mjs';
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -210,10 +211,10 @@ export class DemoConnector {
     this.tick(30_000, () => this.emitUptime());
     this.tick(120_000, () => this.emitDatabase());
     this.emitMetrics();
-    this.emitUptime();
     this.emitDatabase();
     this.emitSentry();
     this.emitCloudflare();
+    this.emitUptime(); // after Cloudflare: its Pages projects add checks of their own
     p.setCloudRun([{ name: 'flobi-artwork-render', url: 'https://flobi-artwork-render-374098310188.europe-west1.run.app', ready: true, revision: 'flobi-artwork-render-00042-kiv', updatedAt: now - 2 * 24 * HOUR }]);
     const since = this.lastSeenAt && now - this.lastSeenAt > 10 * MIN ? this.lastSeenAt : now - 10.5 * HOUR;
     this.recap({ since, until: now }).then((r) => p.setRecap({ ...r, auto: true }));
@@ -716,14 +717,19 @@ export class DemoConnector {
       ['Projects', 'https://projects.flobi.ai/', 'frontend', 100],
       ['Admin', 'https://admin.flobi.ai/', 'frontend', 95],
     ];
-    if (!this.uptimeInit) {
-      this.uptimeInit = true;
-      this.pipeline.setUptimeTargets(targets.map(([name, url, group]) => ({ id: url, name, url, group })));
+    const configured = targets.map(([name, url, group, base]) => ({ id: url, name, url, group, base }));
+    // Like the live app: every Pages project the list leaves out gets a check of its own.
+    const all = [...configured, ...pagesUptimeTargets(this.pipeline.cloudflare?.pages, configured).map((t) => ({ ...t, base: 140 }))];
+    const key = all.map((t) => t.id).join();
+    if (this.uptimeKey !== key) {
+      this.uptimeKey = key;
+      this.pipeline.setUptimeTargets(all.map(({ base, ...t }) => t));
     }
     const now = this.clock();
-    for (const [name, url, group, base] of targets) {
+    for (const { base, ...t } of all) {
+      const { group } = t;
       const ms = Math.round(base * between(0.7, 1.4));
-      this.pipeline.setUptime({ id: url, name, url, group }, { status: 200, ms, certDaysLeft: group === 'frontend' ? 71 : 61, at: now, state: ms > 3000 ? 'slow' : 'up' });
+      this.pipeline.setUptime(t, { status: 200, ms, certDaysLeft: group === 'frontend' ? 71 : 61, at: now, state: ms > 3000 ? 'slow' : 'up' });
     }
   }
 

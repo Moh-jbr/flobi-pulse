@@ -96,6 +96,7 @@ export default function Errors() {
   useEffect(() => {
     if (params?.filter?.source) setSource(params.filter.source);
     if (params?.filter?.service) setQ(params.filter.service);
+    if (params?.q != null) setQ(params.q);
   }, [params?.at]);
 
   const backend = errors?.backend || [];

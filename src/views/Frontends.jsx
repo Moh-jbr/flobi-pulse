@@ -110,7 +110,7 @@ export default function Frontends() {
             <Card key={u.id} className={cx('flex flex-col gap-2', u.state === 'down' && 'shadow-[0_0_0_1.5px_var(--red),var(--shadow-card)]')}>
               <div className="flex items-center gap-2">
                 <StatusDot tone={u.state === 'up' ? 'green' : u.state === 'slow' ? 'orange' : u.state === 'down' ? 'red' : 'gray'} size={8} pulse={u.state === 'down'} />
-                <span className="text-headline font-semibold truncate">{u.name}</span>
+                <span className="text-headline font-semibold truncate" title={u.fromPages ? `Checked because ${u.fromPages} is a Cloudflare Pages project` : undefined}>{u.name}</span>
                 <button type="button" onClick={() => invoke('open:external', { url: u.url })} className="ml-auto text-label-3 hover:text-accent" title={u.url}>
                   <Icon name="external" size={13} />
                 </button>
