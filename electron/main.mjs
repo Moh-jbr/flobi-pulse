@@ -294,6 +294,7 @@ function publicInfo() {
       fal: { hasKey: !!secrets.get('falKey') },
     },
     uptime: c.uptime,
+    uptimeHiddenPages: c.uptimeHiddenPages,
     update: updater?.state || null,
     versions: versionsState(),
     costs: costs?.state() ?? null,
@@ -923,6 +924,18 @@ const commands = {
       .filter((t) => /^https:\/\//.test(t.url))
       .map((t, i) => ({ id: t.id || `u${i}-${t.url}`, name: String(t.name || new URL(t.url).host).slice(0, 60), url: t.url, group: t.group === 'frontend' ? 'frontend' : 'backend' }));
     await settingsStore.update({ overrides: { ...settingsStore.get().overrides, uptime: clean } });
+    await restartLive();
+    return publicInfo();
+  },
+
+  // Stop (or start again) checking a Pages project that isn't on the uptime list.
+  'uptime:hidePages': async ({ name, hidden }) => {
+    if (typeof name !== 'string' || !/^[A-Za-z0-9._-]{1,100}$/.test(name)) throw new Error('Not a Pages project name');
+    const o = settingsStore.get().overrides || {};
+    const list = new Set(Array.isArray(o.uptimeHiddenPages) ? o.uptimeHiddenPages : []);
+    if (hidden) list.add(name);
+    else list.delete(name);
+    await settingsStore.update({ overrides: { ...o, uptimeHiddenPages: [...list] } });
     await restartLive();
     return publicInfo();
   },

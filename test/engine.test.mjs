@@ -462,7 +462,7 @@ test('a service says which of its figures made it unhealthy', () => {
   assert.equal(hot.health, 'degraded');
 });
 
-test("a service's CPU line is its pods' usage against their limits, per poll", () => {
+test("a service's CPU line is its busiest pod's usage against its limit, per poll, like the card's figure", () => {
   let now = Date.UTC(2026, 9, 3, 10, 0);
   const p = new Pipeline({ namespace: 'flobi', emit: () => {}, mode: 'demo', now: () => now });
   try {
@@ -478,7 +478,7 @@ test("a service's CPU line is its pods' usage against their limits, per poll", (
     }
     const brand = p.cpuSpark('flobi-brand');
     assert.equal(brand.unit, 'pct');
-    assert.deepEqual(brand.points.map((v) => Math.round(v * 1000) / 1000), [0.1, 0.15, 0.2]);
+    assert.deepEqual(brand.points.map((v) => Math.round(v * 1000) / 1000), [0.1, 0.2, 0.3], 'the busier pod, not the two averaged');
     const ai = p.cpuSpark('flobi-ai');
     assert.equal(ai.unit, 'cores', 'no limit or request: cores, not a made-up %');
     assert.deepEqual(ai.points, [0.25, 0.25, 0.25]);

@@ -745,7 +745,7 @@ export default function Inspector() {
   // room on Windows) must not swallow clicks on the toolbar underneath.
   return (
     <aside className={cx('p-2 pl-0', isWin && 'pt-[54px]', floating ? 'absolute right-0 top-0 bottom-0 z-inspector pointer-events-none' : 'shrink-0 relative')} style={{ width: Math.min(440, width - 120) }}>
-      {/* Docked, it's the sidebar's twin (same glass, same radius); floating over content it needs the denser glass. */}
+      {/* Docked, it wears the window's panel glass; floating over content it needs the denser glass. */}
       <div key={`${ins.type}:${ins.id}`} className={cx('h-full rounded-[14px] overflow-y-auto animate-slide-right relative', floating ? 'glass-strong shadow-[var(--shadow-pop)] pointer-events-auto' : 'glass-panel')}>
         <button type="button" onClick={() => setState({ inspector: null })} className="no-drag absolute top-4 right-4 z-10 w-7 h-7 rounded-full bg-fill-3 hover:bg-fill-2 grid place-items-center text-label-2" aria-label="Close">
           <Icon name="x" size={12} strokeWidth={2.4} />

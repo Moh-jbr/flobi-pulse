@@ -202,6 +202,8 @@ export function effectiveConfig(team, settings, secrets) {
       token: secrets?.cloudflareToken || t.cloudflare?.token || '',
     },
     uptime: (o.uptime || t.uptime || []).map((u, i) => ({ id: u.id || `u${i}-${u.url}`, group: 'backend', ...u })),
+    // Pages projects someone chose not to check (pages-uptime.mjs adds one for each the list leaves out).
+    uptimeHiddenPages: Array.isArray(o.uptimeHiddenPages) ? o.uptimeHiddenPages.filter((x) => typeof x === 'string') : [],
     // Cloud SQL instances to watch, as "project:region:instance" (only needed when
     // the database is in another project and no pod names it in its settings).
     cloudsql: { instances: [...new Set([...(t.cloudsql?.instances || []), ...(o.cloudsql?.instances || [])])] },

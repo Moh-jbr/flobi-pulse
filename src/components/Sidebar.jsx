@@ -73,7 +73,7 @@ function SourceTrouble({ sources }) {
   return (
     <button
       type="button"
-      onClick={() => navigate('settings')}
+      onClick={() => navigate({ to: 'settings', tab: 'sources' })}
       title={broken.map(([k, l]) => `${l}: ${sources[k].status}${sources[k].message ? ` — ${sources[k].message}` : ''}`).join('\n')}
       className="no-drag w-full h-6 mb-2 px-2.5 rounded-[8px] flex items-center gap-2 text-footnote text-label-2 hover:bg-fill-4 whitespace-nowrap overflow-hidden"
     >

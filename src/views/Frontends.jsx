@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { useStore, navigate, invoke } from '../lib/store.js';
+import { useStore, navigate, invoke, setState } from '../lib/store.js';
 import { ViewScroll } from '../components/Toolbar.jsx';
 import { Card, SectionTitle, Empty, Pill, StatusDot, cx, useNow, Button } from '../components/ui.jsx';
 import { Sparkline, UptimeBars } from '../components/charts.jsx';
@@ -114,6 +114,17 @@ export default function Frontends() {
                 <button type="button" onClick={() => invoke('open:external', { url: u.url })} className="ml-auto text-label-3 hover:text-accent" title={u.url}>
                   <Icon name="external" size={13} />
                 </button>
+                {u.fromPages && (
+                  <button
+                    type="button"
+                    onClick={async () => setState({ info: await invoke('uptime:hidePages', { name: u.fromPages, hidden: true }) })}
+                    className="text-label-3 hover:text-label"
+                    title={`Stop checking ${u.fromPages}. It was added because it's a Cloudflare Pages project; Settings → Uptime checks can bring it back.`}
+                    aria-label={`Stop checking ${u.name}`}
+                  >
+                    <Icon name="x" size={13} />
+                  </button>
+                )}
               </div>
               <UptimeBars history={u.history} />
               <div className="flex justify-between text-subheadline text-label-2 tabular">

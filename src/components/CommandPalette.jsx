@@ -97,7 +97,7 @@ export default function CommandPalette() {
 
   const terms = deep.terms;
   const searching = !!q.trim();
-  const counted = deep.groups.reduce((n, g) => n + g.total, 0);
+  const counted = deep.groups.reduce((n, g) => n + (g.id === 'follow' ? 0 : g.total), 0);
   let lastGroup = null;
   return createPortal(
     <div className="fixed inset-0 z-sheet no-drag" data-layer="palette" onMouseDown={(e) => e.target === e.currentTarget && close()} style={{ background: 'var(--scrim)' }}>

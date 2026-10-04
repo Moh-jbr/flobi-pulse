@@ -437,7 +437,7 @@ export default function Settings() {
             </Group>
             <Group title="Keyboard shortcuts">
               {[
-                ['Search pages, services and actions', shortcut('K')],
+                ['Search everything: services, issues, errors, logs, requests, pods', shortcut('K')],
                 ['Open Settings', shortcut(',')],
                 ['Go to a page in the sidebar', `${shortcut('1')} to ${shortcut('9')}`],
                 ['Close the side panel', 'Esc'],
@@ -474,9 +474,21 @@ export default function Settings() {
           </Group>
         )}
         {tab === 'uptime' && (
-          <Group footer="Checked from this computer every 30 seconds. API endpoints alert when they fail twice in a row.">
-            <UptimeEditor info={info} />
-          </Group>
+          <>
+            <Group footer="Checked from this computer every 30 seconds. API endpoints alert when they fail twice in a row.">
+              <UptimeEditor info={info} />
+            </Group>
+            <Group footer="Every Cloudflare Pages project that isn't on the list above gets a check of its own. One that fails only warns; it never sounds the alarm.">
+              <Row label="Pages projects not checked" detail={info.uptimeHiddenPages?.length ? 'You stopped checking these on the Frontends page' : 'None: every Pages project is checked'} icon="rocket" />
+              {(info.uptimeHiddenPages || []).map((name) => (
+                <Row key={name} label={name}>
+                  <Button size="sm" onClick={async () => setStore({ info: await invoke('uptime:hidePages', { name, hidden: false }) })}>
+                    Check again
+                  </Button>
+                </Row>
+              ))}
+            </Group>
+          </>
         )}
         {tab === 'notifications' && (
           <Group

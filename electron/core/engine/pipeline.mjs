@@ -66,7 +66,7 @@ export class Pipeline {
     this.dbConnIssues = []; // app log lines that look like "can't reach the database"
     this.usageHistory = new Map();
     this.serviceCpu = new Map(); // service → { unit: 'pct' | 'cores', points: [{ t, v }] }, the last hour
-    this.serviceMem = new Map(); // service → { points: [{ t, v }] }: its fullest pod against its memory limit, the last hour
+    this.serviceMem = new Map(); // service → { points: [{ t, v }] }: its fullest container against its memory limit, the last hour
     this.billingStorage = null; // the Costs page's billing export vs BigQuery's free storage (setBillingStorage)
     this._billingStorageKey = null;
     this.billingCredits = []; // prepaid balances below their alert amount (setBillingCredits)
@@ -190,41 +190,43 @@ export class Pipeline {
 
   /**
    * One CPU and one memory point per service per metrics poll, for the Overview
-   * cards' last-hour lines.
-   * - CPU: the pods' usage summed against their limits summed (requests where a
-   *   pod has no limit), so it reads as the same kind of % as the card's number.
-   *   A service whose pods set neither keeps its usage in cores and says so.
-   * - Memory: the fullest pod against its own limit, since one pod hitting its
-   *   limit is what gets it killed. Only pods with a memory limit count.
+   * cards' last-hour lines. Both measure what the card's figures measure
+   * (buildModel's cpuPct and memPct), so the line ends where the number is:
+   * - CPU: the busiest pod, its usage against its limit (its request when it has
+   *   no limit). A service whose pods set neither keeps its usage in cores, summed.
+   * - Memory: the fullest container that has a memory limit, against that limit,
+   *   since one container hitting its limit is what gets it killed. A sidecar
+   *   without a limit doesn't count against the app's.
    */
   _trackServiceUsage(podMetrics, t) {
     const pods = new Map(this.model.pods.map((p) => [p.name, p]));
-    const sums = new Map();
+    const per = new Map();
     for (const m of podMetrics) {
       const pod = pods.get(m.metadata?.name);
       if (!pod?.service || pod.terminal) continue;
+      const limits = new Map((pod.containers || []).map((c) => [c.name, c.memLimit]));
       let used = 0;
-      let mem = 0;
+      let memPct = null;
       for (const c of m.containers || []) {
         used += cpuMilli(c.usage?.cpu);
-        mem += bytes(c.usage?.memory);
+        const limit = limits.get(c.name);
+        if (limit > 0 && c.usage?.memory != null) memPct = Math.max(memPct ?? 0, bytes(c.usage.memory) / limit);
       }
-      const x = sums.get(pod.service) || { used: 0, cap: 0, uncapped: false, memPct: null };
+      const x = per.get(pod.service) || { cpuPct: null, cores: 0, memPct: null };
       const cap = pod.cpuLimit || pod.cpuRequest;
-      x.used += used;
-      if (cap) x.cap += cap;
-      else x.uncapped = true;
-      if (pod.memLimit > 0) x.memPct = Math.max(x.memPct ?? 0, mem / pod.memLimit);
-      sums.set(pod.service, x);
+      if (cap) x.cpuPct = Math.max(x.cpuPct ?? 0, used / cap);
+      x.cores += used / 1000;
+      if (memPct != null) x.memPct = Math.max(x.memPct ?? 0, memPct);
+      per.set(pod.service, x);
     }
     const trim = (points) => {
       while (points.length && t - points[0].t > 60 * MIN) points.shift();
     };
-    for (const [service, x] of sums) {
-      const unit = x.cap && !x.uncapped ? 'pct' : 'cores';
+    for (const [service, x] of per) {
+      const unit = x.cpuPct != null ? 'pct' : 'cores';
       let h = this.serviceCpu.get(service);
       if (!h || h.unit !== unit) this.serviceCpu.set(service, (h = { unit, points: [] }));
-      h.points.push({ t, v: unit === 'pct' ? x.used / x.cap : x.used / 1000 });
+      h.points.push({ t, v: unit === 'pct' ? x.cpuPct : x.cores });
       trim(h.points);
       if (x.memPct != null) {
         let mh = this.serviceMem.get(service);
@@ -246,7 +248,7 @@ export class Pipeline {
     return { unit: h.unit, points: kept.map((p) => p.v), times: kept.map((p) => p.t) };
   }
 
-  /** A service's last-hour memory line (its fullest pod, 0–1 of the limit), or null with fewer than two points. */
+  /** A service's last-hour memory line (its fullest container, 0–1 of the limit), or null with fewer than two points. */
   memSpark(service, n = 60) {
     const h = this.serviceMem.get(service);
     if (!h || h.points.length < 2) return null;
@@ -255,7 +257,7 @@ export class Pipeline {
   }
 
   /**
-   * How long until a service's fullest pod reaches its memory limit at the pace
+   * How long until a service's fullest container reaches its memory limit at the pace
    * of the last 15 minutes (a least-squares line through them), in ms. Null when
    * memory isn't climbing, when there's under 5 minutes of it, when it is still
    * under half the limit, or when the limit is more than an hour away.

@@ -104,3 +104,8 @@ test('the same alert or event raised again is one result with a count', () => {
   assert.equal(events.total, 1);
   assert.match(events.items[0].sub, /^2 times · /);
 });
+
+test("a service result comes with following its live logs", () => {
+  const follow = deepSearch('gateway', data).groups.find((g) => g.id === 'follow');
+  assert.deepEqual(follow.items.map((i) => [i.title, i.open]), [["Follow gateway's logs", { navigate: { to: 'logs', service: 'flobi-gateway' } }]]);
+});

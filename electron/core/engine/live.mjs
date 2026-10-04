@@ -11,6 +11,10 @@ import { SentryClient, explainSentryError } from '../sources/sentry.mjs';
 import { CloudflareClient, summarizeEdge, isNoAccess } from '../sources/cloudflare.mjs';
 import { UptimeMonitor } from '../sources/uptime.mjs';
 import { pagesUptimeTargets } from './pages-uptime.mjs';
+
+// The last Pages projects Cloudflare listed. Kept across connector restarts (any settings
+// change restarts it), so their uptime checks start with it instead of after the next fetch.
+let lastPages = [];
 import { listCloudRunServices } from '../sources/cloudrun.mjs';
 import { lookupDomain } from '../sources/dns.mjs';
 import { normalizeEntry, k8sLogLine } from './normalize.mjs';
@@ -637,15 +641,16 @@ export class LiveConnector {
     this.pipeline.setSource('uptime', 'ok');
   }
 
-  /** The configured checks, plus one for each Cloudflare Pages project they leave out. */
+  /** The configured checks, plus one for each Cloudflare Pages project they leave out (unless hidden). */
   uptimeTargets() {
     const configured = this.config.uptime || [];
-    return [...configured, ...pagesUptimeTargets(this._pages, configured)];
+    const hidden = new Set(this.config.uptimeHiddenPages || []);
+    return [...configured, ...pagesUptimeTargets(lastPages, configured).filter((t) => !hidden.has(t.fromPages))];
   }
 
   /** New Pages projects get a check; one that's gone loses the check it was given. */
   syncPagesUptime(pages) {
-    this._pages = pages || [];
+    lastPages = pages || [];
     if (!this.uptime) return;
     const targets = this.uptimeTargets();
     if (targets.map((t) => `${t.id} ${t.url}`).join() === this.uptime.targets.map((t) => `${t.id} ${t.url}`).join()) return;

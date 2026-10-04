@@ -47,3 +47,10 @@ test('a check whose title is already taken is named by its address', () => {
   const [t] = pagesUptimeTargets([{ name: 'flobi-notes', domains: ['notes.flobi.ai'] }], configured);
   assert.equal(t.name, 'notes.flobi.ai', 'Notes is already the card for docs.flobi.ai');
 });
+
+test('a Pages check that fails only warns; one on the written list is critical', async () => {
+  const { evaluateConditions } = await import('../electron/core/engine/alerts.mjs');
+  const down = { state: 'down', failStreak: 3, error: 'TLS handshake failed', group: 'frontend' };
+  const out = evaluateConditions({ model: {}, uptime: [{ ...down, id: 'u1', name: 'Flow', url: 'https://flow.flobi.ai/' }, { ...down, id: 'pages:flobi-old', name: 'Old', url: 'https://old.flobi.ai/', fromPages: 'flobi-old' }], now: Date.now() }).filter((c) => c.kind === 'uptime');
+  assert.deepEqual(out.map((c) => [c.key, c.severity]), [['uptime:u1', 'critical'], ['uptime:pages:flobi-old', 'warning']]);
+});

@@ -719,7 +719,7 @@ export class DemoConnector {
     ];
     const configured = targets.map(([name, url, group, base]) => ({ id: url, name, url, group, base }));
     // Like the live app: every Pages project the list leaves out gets a check of its own.
-    const all = [...configured, ...pagesUptimeTargets(this.pipeline.cloudflare?.pages, configured).map((t) => ({ ...t, base: 140 }))];
+    const all = [...configured, ...pagesUptimeTargets(this.pipeline.cloudflare?.pages, configured).filter((t) => !this.hiddenPages?.has(t.fromPages)).map((t) => ({ ...t, base: 140 }))];
     const key = all.map((t) => t.id).join();
     if (this.uptimeKey !== key) {
       this.uptimeKey = key;

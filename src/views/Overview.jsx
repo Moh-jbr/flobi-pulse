@@ -1,7 +1,7 @@
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useStore, inspect, navigate } from '../lib/store.js';
 import { ViewScroll } from '../components/Toolbar.jsx';
-import { Card, SectionTitle, Segmented, HealthPill, StatusDot, cx, STATE_TONE, SEV_TONE, useNow, Empty } from '../components/ui.jsx';
+import { Card, SectionTitle, Segmented, HealthPill, Pill, StatusDot, cx, STATE_TONE, SEV_TONE, useNow, Empty } from '../components/ui.jsx';
 import { Sparkline, UptimeBars } from '../components/charts.jsx';
 import Icon from '../components/icons.jsx';
 import { compact, pct, ms, ago, short, num, clockHM } from '../lib/format.js';
@@ -157,7 +157,7 @@ function UsageLine({ cpu, mem, deploys, max, color, memColor }) {
             {deploy ? (
               <span className="text-accent font-medium">Deployed {clockHM(deploy)}</span>
             ) : (
-              <span className="font-mono text-label">{[cpuText, memText].filter(Boolean).join(' · ')}</span>
+              <span className="text-label">{[cpuText, memText].filter(Boolean).join(' · ')}</span>
             )}
             <span className="text-label-3"> · {ago(deploy || (ci != null ? cpu.times[ci] : mem.times[mi]))}</span>
           </span>
@@ -204,16 +204,20 @@ function ServiceCard({ s, metricsSource }) {
         <span className="text-headline font-semibold truncate">{s.short}</span>
         {s.hosts?.length > 0 && <Icon name="globe" size={12} className="text-label-3 shrink-0" />}
         <span className="ml-auto shrink-0">
-          <HealthPill health={s.health} />
+          {memSoon && s.health === 'healthy' ? (
+            <Pill tone={s.memEta < 5 * 60_000 ? 'red' : 'orange'} icon="errors">Memory rising</Pill>
+          ) : (
+            <HealthPill health={s.health} />
+          )}
         </span>
       </div>
       <div className="flex items-end gap-3 mt-2 min-w-0">
         <span title={u.cpuTitle} className="flex items-baseline gap-1">
-          <span className={cx('font-mono text-[20px] leading-6 font-medium tracking-[-0.02em] tabular', u.cpu == null ? 'text-label-3' : caused('cpu') || 'text-label')}>{u.cpu != null ? pct(u.cpu) : '—'}</span>
+          <span className={cx('text-[20px] leading-6 font-medium tracking-[-0.02em] tabular', u.cpu == null ? 'text-label-3' : caused('cpu') || 'text-label')}>{u.cpu != null ? pct(u.cpu) : '—'}</span>
           <span className="text-footnote text-label-3">CPU</span>
         </span>
         <span title={u.memTitle} className="flex items-baseline gap-1 pb-px">
-          <span className={cx('font-mono text-subheadline tabular', u.mem == null ? 'text-label-3' : memTone ? cx(memTone, 'font-medium') : 'text-label-2')}>{u.mem != null ? pct(u.mem) : '—'}</span>
+          <span className={cx('text-subheadline tabular', u.mem == null ? 'text-label-3' : memTone ? cx(memTone, 'font-medium') : 'text-label-2')}>{u.mem != null ? pct(u.mem) : '—'}</span>
           <span className="text-footnote text-label-3">mem</span>
         </span>
         <span className="ml-auto flex items-center gap-1 pb-1 min-w-0" title={s.pods.map((p) => `${p.name} · ${p.status}`).join('\n')}>
@@ -242,7 +246,7 @@ function ServiceCard({ s, metricsSource }) {
       </div>
       <div className="flex items-center gap-3 py-2 text-subheadline text-label-2 tabular shadow-[inset_0_1px_0_var(--line)] -mx-3.5 px-3.5 min-w-0">
         {notes.length ? (
-          <span className={cx('truncate', problem ? tone : memTone)} title={notes.map((n) => (n === memSoon ? `${n}, at the pace its fullest pod climbed over the last 15 minutes` : n)).join('\n')}>{notes.join(' · ')}</span>
+          <span className={cx('truncate', problem ? tone : memTone)} title={notes.map((n) => (n === memSoon ? `${n}, at the pace its fullest container climbed over the last 15 minutes` : n)).join('\n')}>{notes.join(' · ')}</span>
         ) : (
           <>
             {s.rpm != null && s.hosts?.length > 0 && <span>{compact(s.rpm)} req/min</span>}

@@ -11,9 +11,9 @@ function withPipeline(fn) {
   const p = new Pipeline({ namespace: 'flobi', emit: () => {}, mode: 'demo', now: () => clock.now });
   try {
     p.model.pods = [
-      { name: 'flobi-brand-1-aaaaa', service: 'flobi-brand', cpuLimit: 1000, memLimit: 1000 * 2 ** 20 },
-      { name: 'flobi-brand-1-bbbbb', service: 'flobi-brand', cpuLimit: 1000, memLimit: 1000 * 2 ** 20 },
-      { name: 'flobi-ai-1-ccccc', service: 'flobi-ai', cpuLimit: 1000 },
+      { name: 'flobi-brand-1-aaaaa', service: 'flobi-brand', cpuLimit: 1000, memLimit: 1000 * 2 ** 20, containers: [{ name: 'app', memLimit: 1000 * 2 ** 20 }] },
+      { name: 'flobi-brand-1-bbbbb', service: 'flobi-brand', cpuLimit: 1000, memLimit: 1000 * 2 ** 20, containers: [{ name: 'app', memLimit: 1000 * 2 ** 20 }] },
+      { name: 'flobi-ai-1-ccccc', service: 'flobi-ai', cpuLimit: 1000, containers: [{ name: 'app' }] },
     ];
     fn(p, clock);
   } finally {
@@ -37,6 +37,21 @@ test("a service's memory line is its fullest pod against that pod's limit", () =
     polls(p, clock, 3, (i) => 0.4 + i * 0.1);
     assert.deepEqual(p.memSpark('flobi-brand').points.map((v) => Math.round(v * 100) / 100), [0.4, 0.5, 0.6]);
     assert.equal(p.memSpark('flobi-ai'), null, 'no memory limit: no line, rather than a % of nothing');
+  });
+});
+
+test("a sidecar with no memory limit never counts against the app container's limit", () => {
+  withPipeline((p, clock) => {
+    p.model.pods = [{ name: 'flobi-brand-1-aaaaa', service: 'flobi-brand', cpuLimit: 1000, memLimit: 512 * 2 ** 20, containers: [{ name: 'app', memLimit: 512 * 2 ** 20 }, { name: 'proxy' }] }];
+    // The app sits at 300 of its 512 MiB while the unlimited proxy beside it grows 40 → 260 MiB.
+    for (let i = 0; i < 12; i++) {
+      p.setMetrics({ pods: [{ metadata: { name: 'flobi-brand-1-aaaaa' }, containers: [{ name: 'app', usage: { cpu: '100m', memory: '300Mi' } }, { name: 'proxy', usage: { cpu: '10m', memory: `${40 + i * 20}Mi` } }] }], at: clock.now });
+      clock.now += MIN;
+    }
+    clock.now -= MIN;
+    const mem = p.memSpark('flobi-brand');
+    assert.ok(mem.points.every((v) => Math.abs(v - 300 / 512) < 1e-9), 'the app alone: 59% throughout');
+    assert.equal(p.memEta('flobi-brand', clock.now), null, 'nothing is about to run out');
   });
 });
 

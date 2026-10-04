@@ -8,7 +8,7 @@
 // A quoted "two words" must appear together.
 
 const FILTER_KEYS = { service: 'service', svc: 'service', status: 'status', level: 'level', in: 'in' };
-export const SCOPES = { services: 'Services', issues: 'Issues', errors: 'Errors', crashes: 'Crashes', events: 'Events', pods: 'Pods', nodes: 'Nodes', endpoints: 'Endpoints', pages: 'Pages projects', logs: 'Log lines', requests: 'Requests' };
+export const SCOPES = { services: 'Services', follow: 'Follow live logs', issues: 'Issues', errors: 'Errors', crashes: 'Crashes', events: 'Events', pods: 'Pods', nodes: 'Nodes', endpoints: 'Endpoints', pages: 'Pages projects', logs: 'Log lines', requests: 'Requests' };
 const LEVEL_ALIASES = { err: 'error', errors: 'error', warning: 'warn', warnings: 'warn' };
 const SCOPE_ALIASES = { log: 'logs', request: 'requests', traffic: 'requests', alert: 'issues', alerts: 'issues', issue: 'issues', error: 'errors', crash: 'crashes', event: 'events', pod: 'pods', node: 'nodes', service: 'services', uptime: 'endpoints', endpoint: 'endpoints', page: 'pages', deploys: 'pages' };
 
@@ -107,11 +107,15 @@ export function deepSearch(q, d = {}, { perGroup = 5 } = {}) {
   };
 
   if (plain && want('services')) {
+    const matched = (d.services || []).filter((s) => serviceOk(s.name, filters.service) && has(lower(s.name, s.short, (s.hosts || []).join(' '), s.health, (s.reasons || []).join(' '))));
     add(
       'services',
-      (d.services || [])
-        .filter((s) => serviceOk(s.name, filters.service) && has(lower(s.name, s.short, (s.hosts || []).join(' '), s.health, (s.reasons || []).join(' '))))
-        .map((s) => ({ key: `s:${s.name}`, icon: 'stack', title: s.short || short(s.name), sub: s.health !== 'healthy' && s.reasons?.length ? s.reasons.join(' · ') : (s.hosts || []).join(', ') || s.name, health: s.health, r: rank(s.short || s.name, terms) + 2, open: { inspect: ['service', s.name] } })),
+      matched.map((s) => ({ key: `s:${s.name}`, icon: 'stack', title: s.short || short(s.name), sub: s.health !== 'healthy' && s.reasons?.length ? s.reasons.join(' · ') : (s.hosts || []).join(', ') || s.name, health: s.health, r: rank(s.short || s.name, terms) + 2, open: { inspect: ['service', s.name] } })),
+    );
+    // A service's logs as they happen, the way "Logs: brand" always worked.
+    add(
+      'follow',
+      [...matched].sort((a, b) => rank(b.short || b.name, terms) - rank(a.short || a.name, terms)).slice(0, 3).map((s) => ({ key: `f:${s.name}`, icon: 'logs', title: `Follow ${s.short || short(s.name)}'s logs`, sub: 'Live, as they happen', r: rank(s.short || s.name, terms), open: { navigate: { to: 'logs', service: s.name } } })),
     );
   }
 
