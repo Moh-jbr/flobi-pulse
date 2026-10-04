@@ -130,6 +130,7 @@ export function createBrowserBridge() {
   };
   let pipeline = null;
   let connector = null;
+  const hiddenPages = new Set();
   // Like main.mjs: what Silence and Mute set up carries over to the next demo session (in memory).
   let alertState = null;
   let settings = {
@@ -231,6 +232,7 @@ export function createBrowserBridge() {
     team: { projectId: 'flobi-prod-2026', namespace: 'flobi', clusterName: 'flobi-cluster', clusterLocation: 'europe-west1', clusterEndpointInConfig: false },
     integrations: { sentry: { host: 'sentry.io', org: 'flobi', hasToken: true }, cloudflare: { accountId: '', zones: ['flobi.ai'], hasToken: true }, cloudsql: { instances: cloudsqlInstances, fromTeam: [] }, databaseKey, github: { hasToken: true, owner: '4ow4-Developers' }, openrouter: { hasKey: costsKeys.openrouter }, fal: { hasKey: costsKeys.fal } },
     uptime: [],
+    uptimeHiddenPages: [...hiddenPages],
     update,
     versions: demoVersions(versionsViewedAt),
     costs: costsModel(),
@@ -260,6 +262,7 @@ export function createBrowserBridge() {
     // ?offline=1: this computer offline (the sidebar, toolbar and pages say so; alerts wait).
     if (params.get('offline')) pipeline.setConnectivity({ online: false, since: Date.now() - 4 * 60_000 });
     connector = new DemoConnector({ pipeline });
+    connector.hiddenPages = hiddenPages;
     connector.start();
   };
   if (mode === 'demo') start();
@@ -314,6 +317,13 @@ export function createBrowserBridge() {
     },
     'integrations:test': async ({ kind }) => ({ ok: true, message: kind === 'sentry' ? 'Connected to Flobi · 6 projects' : 'Token works · zones: flobi.ai' }),
     'uptime:set': async () => info(),
+    'uptime:hidePages': async ({ name, hidden }) => {
+      if (hidden) hiddenPages.add(name);
+      else hiddenPages.delete(name);
+      if (connector) connector.hiddenPages = hiddenPages;
+      connector?.emitUptime();
+      return info();
+    },
     'logs:follow': async (args) => {
       const id = `f${++seq}`;
       window.__pulseLog?.push({ t: 'follow', id, pod: args.pod, at: Date.now() });

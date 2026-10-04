@@ -146,7 +146,7 @@ export default function Markdown({ text = '', className }) {
       const code = [];
       for (i++; i < lines.length && !/^```/.test(lines[i]); i++) code.push(lines[i]);
       i++;
-      blocks.push(<pre key={blocks.length} className="font-mono text-[11px] leading-[15px] bg-[var(--code-bg)] rounded-[10px] p-2.5 overflow-auto whitespace-pre">{code.join('\n')}</pre>);
+      blocks.push(<pre key={blocks.length} className="font-mono text-[11px] leading-[15px] code-box p-2.5 overflow-auto whitespace-pre">{code.join('\n')}</pre>);
       continue;
     }
     const h = /^(#{1,6})\s+(.*)$/.exec(line);

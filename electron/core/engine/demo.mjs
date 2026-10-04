@@ -5,6 +5,7 @@ import { normalizeEntry, k8sLogLine } from './normalize.mjs';
 import { fmtDuration } from './recap.mjs';
 import { loadPastWeek, processSlice } from './backfill.mjs';
 import { lastMonths, DEFAULT_COSTS } from './costs.mjs';
+import { pagesUptimeTargets } from './pages-uptime.mjs';
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -202,6 +203,7 @@ export class DemoConnector {
     this.pushK8s();
     this.seedHistory(now);
     this.seedTrafficHistory(now);
+    this.seedUsage(now);
     this.tick(200, () => this.emitTraffic());
     this.tick(250, () => this.emitLogs());
     this.tick(3000, () => this.evolve());
@@ -209,10 +211,10 @@ export class DemoConnector {
     this.tick(30_000, () => this.emitUptime());
     this.tick(120_000, () => this.emitDatabase());
     this.emitMetrics();
-    this.emitUptime();
     this.emitDatabase();
     this.emitSentry();
     this.emitCloudflare();
+    this.emitUptime(); // after Cloudflare: its Pages projects add checks of their own
     p.setCloudRun([{ name: 'flobi-artwork-render', url: 'https://flobi-artwork-render-374098310188.europe-west1.run.app', ready: true, revision: 'flobi-artwork-render-00042-kiv', updatedAt: now - 2 * 24 * HOUR }]);
     const since = this.lastSeenAt && now - this.lastSeenAt > 10 * MIN ? this.lastSeenAt : now - 10.5 * HOUR;
     this.recap({ since, until: now }).then((r) => p.setRecap({ ...r, auto: true }));
@@ -398,6 +400,9 @@ export class DemoConnector {
     this.jobs = [0, 1, 2].map((i) => ({ metadata: { name: `bull-cleanup-${29230000 + i * 30}`, uid: `job-${i}`, ownerReferences: [{ kind: 'CronJob', name: 'bull-cleanup' }] }, status: { startTime: new Date(now - (11 + i * 30) * MIN).toISOString(), completionTime: new Date(now - (10 + i * 30) * MIN).toISOString(), succeeded: 1, conditions: [{ type: 'Complete', status: 'True' }] } }));
     this.events = [];
     this.addEvent('Normal', 'ScalingReplicaSet', 'Deployment', 'flobi-notes', `Scaled up replica set flobi-notes-${hex(9)} to 2`, now - 32 * MIN);
+    this.addEvent('Normal', 'ScalingReplicaSet', 'Deployment', 'flobi-notes', `Scaled down replica set flobi-notes-${hex(9)} to 0 from 2`, now - 30 * MIN);
+    this.addEvent('Normal', 'ScalingReplicaSet', 'Deployment', 'flobi-gateway', `Scaled up replica set flobi-gateway-${hex(9)} to 2`, now - 12 * MIN);
+    this.addEvent('Normal', 'ScalingReplicaSet', 'Deployment', 'flobi-gateway', `Scaled down replica set flobi-gateway-${hex(9)} to 0 from 2`, now - 11 * MIN);
     this.addEvent('Normal', 'SuccessfulRescale', 'HorizontalPodAutoscaler', 'flobi-nodes-hpa', 'New size: 3; reason: cpu resource utilization (percentage of request) above target', now - 26 * MIN);
     this.addEvent('Normal', 'SuccessfulRescale', 'HorizontalPodAutoscaler', 'flobi-nodes-hpa', 'New size: 2; reason: All metrics below target', now - 9 * MIN);
     this.addEvent('Warning', 'Unhealthy', 'Pod', this.pods.find((x) => x.metadata.labels.app === 'flobi-face-detection').metadata.name, 'Readiness probe failed: Get "http://10.8.2.14:8000/health": context deadline exceeded (Client.Timeout exceeded while awaiting headers)', now - 4 * MIN);
@@ -630,14 +635,64 @@ export class DemoConnector {
     return [nestLine('ERROR', 'ExceptionsHandler', message, ts), ...stack].map((text, i) => ({ ...this.rawLog(pod, svc, text, ts, 'ERROR'), timestampMs: ts + i }));
   }
 
+  /**
+   * Demo: brand's fullest pod against its memory limit. It climbs 0.8% a minute
+   * and drops back to half when it runs out (it did about 36 minutes before the
+   * demo starts), so the card warns that it will run out again in ~26 minutes.
+   */
+  brandMem(t) {
+    const climbed = 0.29 + (0.008 * (t - this.startedAt)) / MIN;
+    return 0.5 + (((climbed % 0.49) + 0.49) % 0.49);
+  }
+
+  /** The other services' memory wanders slowly inside its band instead of jumping every poll. */
+  memNext(svc) {
+    const band = svc === 'flobi-face-detection' && this.faceDetectionHot ? [0.9, 0.95] : [0.2, 0.55];
+    const prev = this.memLevel.get(svc) ?? between(...band);
+    const v = Math.min(band[1], Math.max(band[0], prev + between(-0.015, 0.015)));
+    this.memLevel.set(svc, v);
+    return v;
+  }
+
+  /** CPU against the limit, wandering on from the last poll so the card's line carries on from the seeded hour. */
+  cpuNext(svc) {
+    const v = Math.min(0.32, Math.max(0.03, (this.cpuLevel.get(svc) ?? between(0.05, 0.25)) + between(-0.03, 0.03)));
+    this.cpuLevel.set(svc, v);
+    return v;
+  }
+
+  /** Demo: the cards' last hour of CPU and memory, as if the app had been open for it. */
+  seedUsage(now) {
+    this.startedAt = now;
+    this.memLevel = new Map();
+    this.cpuLevel = new Map();
+    const cpu = {};
+    const mem = {};
+    for (const d of this.deployments) {
+      const svc = d.metadata.name;
+      let c = between(0.05, 0.25);
+      cpu[svc] = { unit: 'pct', points: [] };
+      mem[svc] = [];
+      for (let i = 60; i >= 1; i--) {
+        const t = now - i * MIN;
+        c = Math.min(0.32, Math.max(0.03, c + between(-0.03, 0.03)));
+        cpu[svc].points.push([t, c]);
+        this.cpuLevel.set(svc, c);
+        mem[svc].push([t, svc === 'flobi-brand' ? this.brandMem(t) : this.memNext(svc)]);
+      }
+    }
+    this.pipeline.restoreUsage({ cpu, mem }, now);
+  }
+
   emitMetrics() {
+    const now = this.clock();
     const podsM = this.pods.map((pod) => {
       const svc = pod.metadata.labels.app;
       const d = this.deployments.find((x) => x.metadata.name === svc);
       const limit = d._mem;
-      let memFrac = svc === 'flobi-face-detection' && this.faceDetectionHot ? between(0.9, 0.95) : svc === 'flobi-brand' ? between(0.45, 0.75) : between(0.2, 0.55);
-      const cpuReq = parseInt(d.spec.containers[0].resources.requests.cpu, 10);
-      return { metadata: { name: pod.metadata.name }, containers: [{ name: svc, usage: { cpu: `${Math.round(cpuReq * between(0.1, 0.9))}m`, memory: `${Math.round(limit * memFrac)}Mi` } }] };
+      const memFrac = svc === 'flobi-brand' ? this.brandMem(now) - between(0, 0.01) : this.memNext(svc);
+      const cpuLimit = parseInt(d.spec.containers[0].resources.limits.cpu, 10);
+      return { metadata: { name: pod.metadata.name }, containers: [{ name: svc, usage: { cpu: `${Math.round(cpuLimit * this.cpuNext(svc))}m`, memory: `${Math.round(limit * memFrac)}Mi` } }] };
     });
     const nodesM = this.nodes.map((n) => ({ metadata: { name: n.metadata.name }, usage: { cpu: `${Math.round(between(1800, 5200))}m`, memory: `${Math.round(between(11, 21))}Gi` } }));
     this.pipeline.setMetrics({ pods: podsM, nodes: nodesM, at: this.clock() });
@@ -655,18 +710,26 @@ export class DemoConnector {
       ['Flow', 'https://flow.flobi.ai/', 'frontend', 120],
       ['Drive', 'https://drive.flobi.ai/', 'frontend', 105],
       ['Brands', 'https://brands.flobi.ai/', 'frontend', 115],
-      ['Notes', 'https://notes.flobi.ai/', 'frontend', 100],
+      ['Notes', 'https://docs.flobi.ai/', 'frontend', 100],
       ['Market', 'https://market.flobi.ai/', 'frontend', 130],
       ['Handoff', 'https://handoff.flobi.ai/', 'frontend', 3400],
+      ['Artwork', 'https://artwork.flobi.ai/', 'frontend', 125],
+      ['Projects', 'https://projects.flobi.ai/', 'frontend', 100],
+      ['Admin', 'https://admin.flobi.ai/', 'frontend', 95],
     ];
-    if (!this.uptimeInit) {
-      this.uptimeInit = true;
-      this.pipeline.setUptimeTargets(targets.map(([name, url, group]) => ({ id: url, name, url, group })));
+    const configured = targets.map(([name, url, group, base]) => ({ id: url, name, url, group, base }));
+    // Like the live app: every Pages project the list leaves out gets a check of its own.
+    const all = [...configured, ...pagesUptimeTargets(this.pipeline.cloudflare?.pages, configured).filter((t) => !this.hiddenPages?.has(t.fromPages)).map((t) => ({ ...t, base: 140 }))];
+    const key = all.map((t) => t.id).join();
+    if (this.uptimeKey !== key) {
+      this.uptimeKey = key;
+      this.pipeline.setUptimeTargets(all.map(({ base, ...t }) => t));
     }
     const now = this.clock();
-    for (const [name, url, group, base] of targets) {
+    for (const { base, ...t } of all) {
+      const { group } = t;
       const ms = Math.round(base * between(0.7, 1.4));
-      this.pipeline.setUptime({ id: url, name, url, group }, { status: 200, ms, certDaysLeft: group === 'frontend' ? 71 : 61, at: now, state: ms > 3000 ? 'slow' : 'up' });
+      this.pipeline.setUptime(t, { status: 200, ms, certDaysLeft: group === 'frontend' ? 71 : 61, at: now, state: ms > 3000 ? 'slow' : 'up' });
     }
   }
 

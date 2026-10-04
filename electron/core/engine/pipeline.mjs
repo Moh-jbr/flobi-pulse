@@ -7,10 +7,17 @@ import { AlertBook, evaluateConditions, certificateImpact } from './alerts.mjs';
 import { crashCopy } from './alert-copy.mjs';
 import { TrafficStats } from './traffic.mjs';
 import { shortName, DB_CONN_ERROR } from './log-parse.mjs';
+import { deploysOf } from './recap.mjs';
 import { mergeCrashRecords, crashCovered, pastIssue, sameProblem, mergeEventRows, PAST_DAYS } from './backfill.mjs';
 
 const MIN = 60_000;
 const PAST_MS = PAST_DAYS * 24 * 60 * MIN; // crashes, events and errors reach this far back
+
+/** At most `n` of a list of points, evenly spaced, always keeping the newest. */
+const thin = (points, n) => {
+  const step = Math.max(1, Math.ceil(points.length / n));
+  return points.filter((_, i) => (points.length - 1 - i) % step === 0);
+};
 const K8S_KEYS = ['pods', 'deployments', 'statefulsets', 'services', 'hpas', 'scaledobjects', 'nodes', 'jobs', 'cronjobs', 'ingresses', 'certificates', 'pdbs'];
 // Source statuses that aren't trouble (setSource).
 const WORKING = new Set(['ok', 'streaming', 'connecting', 'off']);
@@ -58,6 +65,8 @@ export class Pipeline {
     this.sqlSeenInLogs = new Set(); // Cloud SQL connection names seen in Postgres logs
     this.dbConnIssues = []; // app log lines that look like "can't reach the database"
     this.usageHistory = new Map();
+    this.serviceCpu = new Map(); // service → { unit: 'pct' | 'cores', points: [{ t, v }] }, the last hour
+    this.serviceMem = new Map(); // service → { points: [{ t, v }] }: its fullest container against its memory limit, the last hour
     this.billingStorage = null; // the Costs page's billing export vs BigQuery's free storage (setBillingStorage)
     this._billingStorageKey = null;
     this.billingCredits = []; // prepaid balances below their alert amount (setBillingCredits)
@@ -175,7 +184,147 @@ export class Pipeline {
       while (h.points.length && t - h.points[0].t > 60 * MIN) h.points.shift();
     }
     for (const [name, h] of this.usageHistory) if (!h.points.length || t - h.points[h.points.length - 1].t > 60 * MIN) this.usageHistory.delete(name);
+    this._trackServiceUsage(pods, t);
     this.scheduleRebuild();
+  }
+
+  /**
+   * One CPU and one memory point per service per metrics poll, for the Overview
+   * cards' last-hour lines. Both measure what the card's figures measure
+   * (buildModel's cpuPct and memPct), so the line ends where the number is:
+   * - CPU: the busiest pod, its usage against its limit (its request when it has
+   *   no limit). A service whose pods set neither keeps its usage in cores, summed.
+   * - Memory: the fullest container that has a memory limit, against that limit,
+   *   since one container hitting its limit is what gets it killed. A sidecar
+   *   without a limit doesn't count against the app's.
+   */
+  _trackServiceUsage(podMetrics, t) {
+    const pods = new Map(this.model.pods.map((p) => [p.name, p]));
+    const per = new Map();
+    for (const m of podMetrics) {
+      const pod = pods.get(m.metadata?.name);
+      if (!pod?.service || pod.terminal) continue;
+      const limits = new Map((pod.containers || []).map((c) => [c.name, c.memLimit]));
+      let used = 0;
+      let memPct = null;
+      for (const c of m.containers || []) {
+        used += cpuMilli(c.usage?.cpu);
+        const limit = limits.get(c.name);
+        if (limit > 0 && c.usage?.memory != null) memPct = Math.max(memPct ?? 0, bytes(c.usage.memory) / limit);
+      }
+      const x = per.get(pod.service) || { cpuPct: null, cores: 0, memPct: null };
+      const cap = pod.cpuLimit || pod.cpuRequest;
+      if (cap) x.cpuPct = Math.max(x.cpuPct ?? 0, used / cap);
+      x.cores += used / 1000;
+      if (memPct != null) x.memPct = Math.max(x.memPct ?? 0, memPct);
+      per.set(pod.service, x);
+    }
+    const trim = (points) => {
+      while (points.length && t - points[0].t > 60 * MIN) points.shift();
+    };
+    for (const [service, x] of per) {
+      const unit = x.cpuPct != null ? 'pct' : 'cores';
+      let h = this.serviceCpu.get(service);
+      if (!h || h.unit !== unit) this.serviceCpu.set(service, (h = { unit, points: [] }));
+      h.points.push({ t, v: unit === 'pct' ? x.cpuPct : x.cores });
+      trim(h.points);
+      if (x.memPct != null) {
+        let mh = this.serviceMem.get(service);
+        if (!mh) this.serviceMem.set(service, (mh = { points: [] }));
+        mh.points.push({ t, v: x.memPct });
+        trim(mh.points);
+      }
+    }
+    for (const map of [this.serviceCpu, this.serviceMem]) {
+      for (const [service, h] of map) if (!h.points.length || t - h.points[h.points.length - 1].t > 60 * MIN) map.delete(service);
+    }
+  }
+
+  /** A service's last-hour CPU line, at most `n` points (the newest kept), or null with fewer than two. */
+  cpuSpark(service, n = 60) {
+    const h = this.serviceCpu.get(service);
+    if (!h || h.points.length < 2) return null;
+    const kept = thin(h.points, n);
+    return { unit: h.unit, points: kept.map((p) => p.v), times: kept.map((p) => p.t) };
+  }
+
+  /** A service's last-hour memory line (its fullest container, 0–1 of the limit), or null with fewer than two points. */
+  memSpark(service, n = 60) {
+    const h = this.serviceMem.get(service);
+    if (!h || h.points.length < 2) return null;
+    const kept = thin(h.points, n);
+    return { points: kept.map((p) => p.v), times: kept.map((p) => p.t) };
+  }
+
+  /**
+   * How long until a service's fullest container reaches its memory limit at the pace
+   * of the last 15 minutes (a least-squares line through them), in ms. Null when
+   * memory isn't climbing, when there's under 5 minutes of it, when it is still
+   * under half the limit, or when the limit is more than an hour away.
+   */
+  memEta(service, now = this.now()) {
+    const pts = (this.serviceMem.get(service)?.points || []).filter((p) => now - p.t <= 15 * MIN);
+    if (pts.length < 4 || pts[pts.length - 1].t - pts[0].t < 5 * MIN) return null;
+    const n = pts.length;
+    const mt = pts.reduce((a, p) => a + p.t, 0) / n;
+    const mv = pts.reduce((a, p) => a + p.v, 0) / n;
+    let num = 0;
+    let den = 0;
+    for (const p of pts) {
+      num += (p.t - mt) * (p.v - mv);
+      den += (p.t - mt) ** 2;
+    }
+    const slope = den ? num / den : 0; // share of the limit per ms
+    const last = pts[n - 1].v;
+    if (slope <= 0 || last < 0.5) return null;
+    if (last >= 1) return 0;
+    const eta = (1 - last) / slope;
+    return eta <= 60 * MIN ? eta : null;
+  }
+
+  /** When each service was deployed in the last hour, from the Kubernetes events (oldest first). */
+  recentDeploys(now = this.now()) {
+    const evs = this.events
+      .filter((e) => e.kind === 'Deployment' && e.reason === 'ScalingReplicaSet' && now - e.at <= 75 * MIN)
+      .map((e) => ({ reason: e.reason, objectKind: e.kind, objectName: e.name, message: e.message, at: e.at }))
+      .sort((a, b) => a.at - b.at);
+    const out = new Map();
+    for (const d of deploysOf(evs)) {
+      if (now - d.at > 60 * MIN) continue;
+      if (!out.has(d.service)) out.set(d.service, []);
+      out.get(d.service).push(d.at);
+    }
+    return out;
+  }
+
+  /** The cards' last hour, about a point a minute, to save on quit and bring back on the next start. */
+  usageToSave() {
+    const pack = (points) => thin(points, 60).map((p) => [p.t, Math.round(p.v * 1e4) / 1e4]);
+    const cpu = {};
+    const mem = {};
+    for (const [svc, h] of this.serviceCpu) cpu[svc] = { unit: h.unit, points: pack(h.points) };
+    for (const [svc, h] of this.serviceMem) mem[svc] = pack(h.points);
+    return Object.keys(cpu).length || Object.keys(mem).length ? { at: this.now(), cpu, mem } : null;
+  }
+
+  /** Brings back what usageToSave() kept, minus anything older than an hour. Points from this session win. */
+  restoreUsage(saved, now = this.now()) {
+    if (!saved || typeof saved !== 'object') return;
+    const fresh = (list) => (Array.isArray(list) ? list.filter((x) => Array.isArray(x) && now - x[0] <= 60 * MIN && x[0] <= now && Number.isFinite(x[1])).map(([t, v]) => ({ t, v })) : []);
+    for (const [svc, h] of Object.entries(saved.cpu || {})) {
+      const pts = fresh(h?.points);
+      if (!pts.length || (h.unit !== 'pct' && h.unit !== 'cores')) continue;
+      const cur = this.serviceCpu.get(svc);
+      if (cur && cur.unit !== h.unit) continue;
+      this.serviceCpu.set(svc, { unit: h.unit, points: [...pts.filter((p) => !cur?.points.length || p.t < cur.points[0].t), ...(cur?.points || [])] });
+    }
+    for (const [svc, list] of Object.entries(saved.mem || {})) {
+      const pts = fresh(list);
+      if (!pts.length) continue;
+      const cur = this.serviceMem.get(svc);
+      this.serviceMem.set(svc, { points: [...pts.filter((p) => !cur?.points.length || p.t < cur.points[0].t), ...(cur?.points || [])] });
+    }
+    this.dirty.add('services');
   }
 
   /** CPU (cores) / memory (bytes) per pod of a service, collected while the app is open. */
@@ -733,6 +882,7 @@ export class Pipeline {
         const live = new Map(snap.byService.map((s) => [s.service, s]));
         const liveOk = this.sources.live?.status === 'streaming' || this.mode === 'demo';
         const hist = this.trafficHistory(now);
+        const deploys = this.recentDeploys(now);
         return this.model.services.map((s) => {
           const t = live.get(s.name);
           const errSpark = this.errors.perMinute(s.name, hist.series.length, now);
@@ -744,6 +894,10 @@ export class Pipeline {
             errorsPerMin: this.errors.ratePerMinute(s.name, 5, now),
             requestSpark: hist.spark[s.name]?.length > 1 ? hist.spark[s.name] : null,
             errorSpark: errSpark.length > 1 ? errSpark : null,
+            cpuSpark: this.cpuSpark(s.name),
+            memSpark: this.memSpark(s.name),
+            memEta: this.memEta(s.name, now),
+            deploys: deploys.get(s.name) || null,
           };
         });
       }

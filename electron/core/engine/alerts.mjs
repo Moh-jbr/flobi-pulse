@@ -419,7 +419,9 @@ export function evaluateConditions({ model, traffic, uptime, database, cloudRun,
     }
   }
   for (const u of uptime || []) {
-    if (u.state === 'down' && u.failStreak >= 2) out.push({ key: `uptime:${u.id}`, kind: 'uptime', severity: 'critical', ...uptimeCopy(u), view: { to: u.group === 'frontend' ? 'frontends' : 'crashes' } });
+    // A check added only because a Pages project exists (an old test project, a domain still
+    // being set up) warns; only the list someone wrote down can sound the alarm.
+    if (u.state === 'down' && u.failStreak >= 2) out.push({ key: `uptime:${u.id}`, kind: 'uptime', severity: u.fromPages ? 'warning' : 'critical', ...uptimeCopy(u), view: { to: u.group === 'frontend' ? 'frontends' : 'crashes' } });
     if (u.certDaysLeft != null && u.certDaysLeft < 14) {
       const host = new URL(u.url).host;
       out.push({ key: `tls:${u.id}`, kind: 'uptime', severity: u.certDaysLeft < 3 ? 'critical' : 'warning', title: `HTTPS certificate for ${host} expires in ${u.certDaysLeft} day${u.certDaysLeft === 1 ? '' : 's'}`, detail: u.url, impact: 'When it expires, browsers block the site with a security warning.', action: 'Renew it. Google- and Cloudflare-managed certificates renew themselves, so find out why this one hasn’t.', view: { to: 'infrastructure' } });

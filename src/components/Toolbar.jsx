@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import { useStore, setState, navigate, invoke } from '../lib/store.js';
 import Icon from './icons.jsx';
-import { cx, IconButton, Popover, StatusDot, Segmented, Empty, useWindowWidth, AlertText } from './ui.jsx';
+import { cx, IconButton, Popover, StatusDot, Segmented, Empty, useWindowWidth, AlertText, Spinner } from './ui.jsx';
 import { compact, ago, short, duration } from '../lib/format.js';
 import { shortcut } from '../lib/platform.js';
 
@@ -56,11 +56,11 @@ function UpdateButton() {
       title={tip}
       className={cx(
         'no-drag press relative overflow-hidden h-7 pl-2.5 pr-3 rounded-full inline-flex items-center gap-1.5 text-callout font-semibold disabled:pointer-events-none',
-        failed ? 'bg-orange-tint text-orange' : 'bg-accent text-white shadow-[0_1px_2px_rgb(0_0_0/0.12),inset_0_0.5px_0_rgb(255_255_255/0.35)] hover:brightness-110',
+        failed ? 'bg-orange-tint text-orange' : 'bg-accent text-on-accent hover:opacity-85',
       )}
     >
       {u.status === 'downloading' && <span className="absolute inset-y-0 left-0 bg-white/20" style={{ width: `${pct}%`, transition: 'width 300ms var(--ease-smooth)' }} />}
-      <Icon name={failed ? 'refresh' : 'download'} size={14} strokeWidth={2} className={cx('relative', u.status === 'installing' && 'spinner')} />
+      {u.status === 'installing' ? <Spinner size={14} className="relative text-on-accent!" /> : <Icon name={failed ? 'refresh' : 'download'} size={14} strokeWidth={2} className="relative" />}
       <span className="relative tabular">{label}</span>
     </button>
   );
@@ -122,7 +122,7 @@ function AlertsButton() {
           {list.map((a) => {
             const look = alertLook(a);
             return (
-              <div key={a.id} className={cx('group p-2.5 rounded-[14px] hover:bg-fill-4 flex gap-2.5', (a.acked || a.muted || a.clearing) && 'opacity-60')}>
+              <div key={a.id} className={cx('group p-2.5 rounded-[10px] hover:bg-fill-4 flex gap-2.5', (a.acked || a.muted || a.clearing) && 'opacity-60')}>
                 <div className={cx('mt-0.5 w-6 h-6 rounded-full grid place-items-center shrink-0', look.bg)}>
                   <Icon name={look.icon} size={13} strokeWidth={2} className={look.fg} />
                 </div>
@@ -197,10 +197,12 @@ export default function Toolbar() {
 }
 
 // `inner` limits the width of the content only, so the whole view (including
-// the empty area beside a narrow column) still scrolls with the wheel.
+// the empty area beside a narrow column) still scrolls with the wheel. The
+// scrollbar's room is always kept, so content doesn't shift sideways when a
+// page (or a Settings tab) grows tall enough to scroll.
 export function ViewScroll({ children, className, inner }) {
   return (
-    <div className={cx('absolute inset-0 overflow-y-auto pt-[60px] pb-10 px-6', className)}>
+    <div className={cx('absolute inset-0 overflow-y-auto [scrollbar-gutter:stable] pt-[60px] pb-10 px-6', className)}>
       {inner ? <div className={inner}>{children}</div> : children}
     </div>
   );

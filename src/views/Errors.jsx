@@ -54,7 +54,7 @@ const Row = memo(function Row({ g, now, selected, span }) {
           )}
         </div>
         <div className="text-subheadline text-label-2 mt-1 flex items-center gap-1.5 min-w-0">
-          <span className={cx('inline-flex items-center gap-1 px-1.5 h-[18px] rounded-[5px] font-medium', frontend ? 'bg-accent-tint text-accent' : 'bg-fill-3 text-label-2')}>
+          <span className={cx('inline-flex shrink-0 items-center gap-1 px-1.5 h-[18px] rounded-[5px] font-medium whitespace-nowrap', frontend ? 'bg-accent-tint text-accent' : 'bg-fill-3 text-label-2')}>
             <Icon name={frontend ? 'frontends' : 'pod'} size={11} />
             {frontend ? g.project : short(g.service)}
           </span>
@@ -96,6 +96,7 @@ export default function Errors() {
   useEffect(() => {
     if (params?.filter?.source) setSource(params.filter.source);
     if (params?.filter?.service) setQ(params.filter.service);
+    if (params?.q != null) setQ(params.q);
   }, [params?.at]);
 
   const backend = errors?.backend || [];
@@ -150,7 +151,7 @@ export default function Errors() {
             <div className="text-headline font-semibold">Connect Sentry to see frontend errors here</div>
             <div className="text-callout text-label-2">Errors from the React apps show up next to backend errors, and new ones trigger alerts.</div>
           </div>
-          <Button variant="tinted" onClick={() => navigate('settings')}>
+          <Button variant="tinted" onClick={() => navigate({ to: 'settings', tab: 'integrations' })}>
             Connect
           </Button>
         </Card>

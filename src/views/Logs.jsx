@@ -195,7 +195,8 @@ export default function Logs() {
     if (params.pod) setScope({ kind: 'pod', pod: params.pod, service: params.service });
     else if (params.service) setScope({ kind: 'service', service: params.service });
     if (params.level) setLevel(params.level);
-    if (params.from) runHistory({ from: params.from, until: params.until, service: params.service, pod: params.pod, level: params.level });
+    if (params.q != null) setQ(params.q);
+    if (params.from) runHistory({ from: params.from, until: params.until, service: params.service, pod: params.pod, level: params.level, text: params.q || undefined });
   }, [params?.at]);
 
   const podList = useMemo(() => pods.filter((p) => p.state !== 'done' && !p.terminal), [pods.map((p) => `${p.name}:${p.state === 'done' || !!p.terminal}`).join()]);
@@ -353,7 +354,7 @@ export default function Logs() {
     setFollow(true);
   };
 
-  const rh = document.documentElement.dataset.density === 'compact' ? 22 : 26;
+  const rh = useStore((s) => s.info?.settings?.appearance?.density) === 'compact' ? 22 : 26;
   const serviceOptions = services.map((s) => s.name).sort();
   const filtering = level !== 'all' || q.trim() !== '';
   const clearFilters = () => {
@@ -483,7 +484,7 @@ export default function Logs() {
         </div>
       )}
 
-      <div className="flex-1 min-h-0 relative mx-6 mb-4 rounded-[18px] overflow-hidden bg-[var(--code-bg)] shadow-[var(--shadow-card)]">
+      <div className="flex-1 min-h-0 relative mx-6 mb-4 rounded-[12px] overflow-hidden bg-[var(--code-bg)] shadow-[var(--shadow-card)]">
         <VirtualList
           className="absolute inset-0 py-1 font-mono text-[11.5px] leading-[16px]"
           items={items}

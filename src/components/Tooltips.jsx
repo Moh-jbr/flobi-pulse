@@ -182,7 +182,7 @@ export default function Tooltips() {
   const style = { top: pos?.top ?? 0, left: pos?.left ?? 0, visibility: pos ? 'visible' : 'hidden' };
   if (tip.info) {
     return createPortal(
-      <div ref={box} role="tooltip" className="fixed z-tooltip selectable w-[300px] max-w-[calc(100vw-12px)] p-3 rounded-[14px] glass-strong break-words animate-fade" style={style}>
+      <div ref={box} role="tooltip" className="fixed z-tooltip selectable w-[300px] max-w-[calc(100vw-12px)] p-3 rounded-[10px] glass-strong break-words animate-fade" style={style}>
         <div className="text-callout font-semibold text-label">{tip.info.title}</div>
         <p className="text-callout leading-[17px] text-label-2 mt-1">{tip.info.body}</p>
         {tip.info.note && <p className="text-subheadline leading-[16px] text-label-2 mt-2.5 pt-2.5 hairline-t">{tip.info.note}</p>}
@@ -194,7 +194,7 @@ export default function Tooltips() {
     <div
       ref={box}
       aria-hidden="true"
-      className="fixed z-tooltip pointer-events-none max-w-[360px] px-2.5 py-1.5 rounded-[9px] bg-[var(--tooltip-bg)] text-[var(--tooltip-fg)] text-footnote leading-[15px] shadow-[0_6px_20px_rgb(0_0_0/0.18)] whitespace-pre-wrap break-words animate-fade"
+      className="fixed z-tooltip pointer-events-none max-w-[360px] px-2.5 py-1.5 rounded-[7px] bg-[var(--tooltip-bg)] text-[var(--tooltip-fg)] text-footnote leading-[15px] shadow-[0_6px_20px_rgb(0_0_0/0.18)] whitespace-pre-wrap break-words animate-fade"
       style={style}
     >
       {tip.text}

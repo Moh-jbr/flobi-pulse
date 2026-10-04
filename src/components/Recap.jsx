@@ -1,8 +1,9 @@
-import { useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { navigate, setState } from '../lib/store.js';
 import Icon from './icons.jsx';
 import { cx, SEV_TONE, TONE } from './ui.jsx';
 import { dayTime, duration, compact, clock, short, day } from '../lib/format.js';
+import { timelineRows, timelineTicks } from '../lib/timeline.js';
 
 /** Incidents as table rows (Export on Timeline and in the recap sheet). */
 export const INCIDENT_COLUMNS = [
@@ -48,69 +49,104 @@ export function SummaryChips({ summary }) {
   );
 }
 
-/** Horizontal strip: each incident is a bar positioned in time; deploys are ticks. */
+/**
+ * The time away as labelled rows: one per service (or kind of thing) that had
+ * trouble, each incident a bar from when it started to when it ended, deploys
+ * on a row of their own, and round hour marks underneath with the day named at
+ * midnight. Hover says what a bar was; a click opens it.
+ */
 export function TimelineStrip({ recap }) {
-  const ref = useRef(null);
   const [hover, setHover] = useState(null);
   const { since, until, incidents = [], deploys = [] } = recap;
   const span = Math.max(1, until - since);
   const endOf = (inc) => Math.max(inc.start, inc.end ?? until);
-  // Which row each bar sits on, so overlapping incidents don't hide each other. Kept here:
-  // the incidents belong to the store and are never written to.
-  const { lanes, laneOf } = useMemo(() => {
-    const ends = [];
-    const laneOf = new Map();
-    for (const inc of byStart(incidents)) {
-      let lane = ends.findIndex((end) => end + span * 0.01 < inc.start);
-      if (lane < 0) {
-        lane = ends.length;
-        ends.push(0);
-      }
-      ends[lane] = Math.max(endOf(inc), inc.start + span * 0.012);
-      laneOf.set(inc, lane);
-    }
-    return { lanes: Math.max(1, ends.length), laneOf };
-  }, [incidents, span, until]);
-  const x = (t) => `${((t - since) / span) * 100}%`;
-  const ticks = 6;
+  const rows = useMemo(() => timelineRows(incidents), [incidents]);
+  const ticks = useMemo(() => timelineTicks(since, until), [since, until]);
+  const pos = (t) => Math.min(100, Math.max(0, ((t - since) / span) * 100));
+  const open = (view) => view && (setState({ recapOpen: false }), navigate(view));
+  const LABEL = 'w-[104px] shrink-0 pr-3 truncate text-subheadline';
   return (
-    <div ref={ref} className="relative select-none" onMouseLeave={() => setHover(null)}>
-      <div className="relative rounded-xl bg-fill-4" style={{ height: lanes * 16 + 20 }}>
-        {Array.from({ length: ticks + 1 }, (_, i) => (
-          <span key={i} className="absolute top-0 bottom-0 w-px bg-separator" style={{ left: `${(i / ticks) * 100}%` }} />
+    <div className="relative select-none" onMouseLeave={() => setHover(null)}>
+      <div className="relative">
+        {/* Hour marks run behind every row; midnight is a stronger line. */}
+        <div aria-hidden="true" className="absolute top-0 bottom-0 left-[104px] right-0 pointer-events-none">
+          {ticks.map((k) => (
+            <span key={k.t} className={cx('absolute top-0 bottom-0 w-px', k.midnight ? 'bg-[var(--line-strong)]' : 'bg-[var(--line)]')} style={{ left: `${pos(k.t)}%` }} />
+          ))}
+        </div>
+        {rows.map((row) => (
+          <div key={row.label} className="relative flex items-center h-7 group" title={row.others ? row.others.join(', ') : undefined}>
+            <div className={cx(LABEL, 'flex items-center gap-1.5', hover && row.incidents.includes(hover) ? 'text-label' : 'text-label-2')}>
+              <span className={cx('w-1.5 h-1.5 rounded-full shrink-0', row.worst === 'critical' ? 'bg-red' : 'bg-orange')} />
+              <span className="truncate">{row.label}</span>
+            </div>
+            <div className="relative flex-1 h-full shadow-[inset_0_-1px_0_var(--line)]">
+              {row.incidents.map((inc) => {
+                const left = pos(inc.start);
+                const width = Math.max(0, pos(endOf(inc)) - left);
+                return (
+                  <button
+                    key={inc.id}
+                    type="button"
+                    aria-label={[inc.title, dayTime(inc.start), lasted(inc)].filter(Boolean).join(', ')}
+                    onMouseEnter={() => setHover(inc)}
+                    onFocus={() => setHover(inc)}
+                    onBlur={() => setHover(null)}
+                    onClick={() => open(inc.view)}
+                    className={cx(
+                      'absolute top-1/2 -translate-y-1/2 h-3 rounded-[3px] transition-[filter,box-shadow]',
+                      inc.severity === 'critical' ? 'bg-red' : 'bg-orange',
+                      hover === inc ? 'brightness-110 shadow-[0_0_0_2px_var(--bg-elevated),0_0_0_3px_currentColor] text-label' : 'hover:brightness-110',
+                    )}
+                    style={{ left: `${left}%`, width: `max(6px, ${width}%)` }}
+                  />
+                );
+              })}
+            </div>
+          </div>
         ))}
-        {deploys.map((d, i) => (
-          <span key={i} title={`Deploy: ${d.service} · ${dayTime(d.at)}`} className="absolute top-1 bottom-1 w-[2px] rounded-full bg-accent/70" style={{ left: x(d.at) }} />
-        ))}
-        {incidents.map((inc) => (
-          <button
-            key={inc.id}
-            type="button"
-            aria-label={[inc.title, dayTime(inc.start), lasted(inc)].filter(Boolean).join(', ')}
-            onMouseEnter={() => setHover(inc)}
-            onFocus={() => setHover(inc)}
-            onBlur={() => setHover(null)}
-            onClick={() => inc.view && (setState({ recapOpen: false }), navigate(inc.view))}
-            className={cx('absolute h-3 rounded-full hover:brightness-110 transition-[filter]', inc.severity === 'critical' ? 'bg-red' : 'bg-orange')}
-            style={{ left: x(inc.start), width: `max(8px, ${((endOf(inc) - inc.start) / span) * 100}%)`, top: 10 + (laneOf.get(inc) ?? 0) * 16 }}
-          />
-        ))}
+        {deploys.length > 0 && (
+          <div className="relative flex items-center h-7">
+            <div className={cx(LABEL, 'flex items-center gap-1.5 text-label-2')}>
+              <Icon name="rocket" size={11} className="text-label-3 shrink-0" />
+              <span className="truncate">Deploys</span>
+            </div>
+            <div className="relative flex-1 h-full">
+              {deploys.map((d, i) => (
+                <span
+                  key={i}
+                  title={`Deploy: ${short(d.service)} · ${dayTime(d.at)}`}
+                  className="absolute top-1/2 w-2 h-2 rounded-[1px] bg-label-2 hover:bg-label shadow-[0_0_0_2px_var(--bg-elevated)]"
+                  style={{ left: `${pos(d.at)}%`, transform: 'translate(-50%, -50%) rotate(45deg)' }}
+                />
+              ))}
+            </div>
+          </div>
+        )}
       </div>
-      <div className="relative h-5 mt-1">
-        {Array.from({ length: ticks + 1 }, (_, i) => {
-          const t = since + (span * i) / ticks;
+      <div className="relative h-5 mt-1.5 ml-[104px]">
+        {ticks.map((k) => {
+          const p = pos(k.t);
           return (
-            <span key={i} className="absolute text-footnote text-label-3 tabular -translate-x-1/2 whitespace-nowrap" style={{ left: `${(i / ticks) * 100}%`, transform: i === 0 ? 'none' : i === ticks ? 'translateX(-100%)' : undefined }}>
-              {span > 36 * 3600_000 ? dayTime(t) : clock(t, false)}
+            <span
+              key={k.t}
+              className={cx('absolute text-footnote tabular whitespace-nowrap', k.midnight ? 'text-label-2 font-medium' : 'text-label-3')}
+              style={{ left: `${p}%`, transform: p < 4 ? 'none' : p > 96 ? 'translateX(-100%)' : 'translateX(-50%)' }}
+            >
+              {k.midnight ? day(k.t) : clock(k.t, false)}
             </span>
           );
         })}
       </div>
       {hover && (
-        <div className="absolute z-10 glass-strong rounded-xl px-3 py-2 text-callout pointer-events-none max-w-[320px] animate-fade" style={{ left: `min(calc(${x(hover.start)}), calc(100% - 320px))`, top: -8, transform: 'translateY(-100%)' }}>
+        <div
+          className="absolute z-10 glass-strong rounded-[10px] px-3 py-2 text-callout pointer-events-none w-max max-w-[320px] animate-fade"
+          style={{ left: `calc(104px + (100% - 104px) * ${pos(hover.start) / 100})`, top: (rows.findIndex((r) => r.incidents.includes(hover)) || 0) * 28 - 6, transform: `translate(${pos(hover.start) > 60 ? '-100%' : '0'}, -100%)` }}
+        >
           <div className="font-semibold">{hover.title}</div>
           <div className="text-label-2 text-subheadline">
             {dayTime(hover.start)} · {duration(Math.max(60_000, endOf(hover) - hover.start))}
+            {hover.end == null ? ' · still going' : ''}
           </div>
         </div>
       )}
@@ -138,7 +174,7 @@ export function IncidentList({ incidents, onNavigate }) {
             {list.map((inc) => (
               <div key={inc.id} className="relative group">
                 <span className={cx('absolute -left-[17px] top-3.5 w-[11px] h-[11px] rounded-full ring-[3px] ring-[var(--bg-elevated)]', TONE[SEV_TONE[inc.severity]].dot)} />
-                <button type="button" onClick={() => inc.view && onNavigate?.(inc.view)} className="w-full text-left p-2.5 rounded-[14px] hover:bg-fill-4 flex gap-3">
+                <button type="button" onClick={() => inc.view && onNavigate?.(inc.view)} className="w-full text-left p-2.5 rounded-[10px] hover:bg-fill-4 flex gap-3">
                   <div className="w-12 shrink-0 text-callout text-label-2 tabular pt-0.5">{clock(inc.start, false)}</div>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
@@ -164,7 +200,7 @@ export function RecapExtras({ recap }) {
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
       {recap.deploys?.length > 0 && (
-        <div className="rounded-[16px] bg-fill-4 p-3.5">
+        <div className="rounded-[12px] bg-fill-4 p-3.5">
           <div className="text-headline font-semibold mb-2 flex items-center gap-1.5">
             <Icon name="rocket" size={14} className="text-accent" /> Deploys
           </div>
@@ -177,7 +213,7 @@ export function RecapExtras({ recap }) {
         </div>
       )}
       {recap.scaling?.length > 0 && (
-        <div className="rounded-[16px] bg-fill-4 p-3.5">
+        <div className="rounded-[12px] bg-fill-4 p-3.5">
           <div className="text-headline font-semibold mb-2 flex items-center gap-1.5">
             <Icon name="scale" size={14} className="text-accent" /> Autoscaling
           </div>

@@ -450,3 +450,45 @@ test('certificate warning is explained from DNS: Cloudflare in front, or not in 
   // Before the first DNS answers: wait, don't alert.
   assert.equal(certificateImpact(cert, [], new Map()).waiting, true);
 });
+
+test('a service says which of its figures made it unhealthy', () => {
+  const base = { desired: 2, ready: 2, updated: 2, podList: [], recentRestarts: 0, memPct: 0.4 };
+  assert.deepEqual(serviceHealth(base).causes, []);
+  assert.deepEqual(serviceHealth({ ...base, memPct: 0.95 }).causes, ['mem']);
+  assert.deepEqual(serviceHealth({ ...base, ready: 1 }).causes, ['pods']);
+  assert.deepEqual(serviceHealth({ ...base, recentRestarts: 2 }).causes, ['restarts']);
+  const hot = serviceHealth({ ...base, scaling: { atMax: true, max: 4, cpuTarget: 70, cpuNow: 95 } });
+  assert.deepEqual(hot.causes, ['cpu']);
+  assert.equal(hot.health, 'degraded');
+});
+
+test("a service's CPU line is its busiest pod's usage against its limit, per poll, like the card's figure", () => {
+  let now = Date.UTC(2026, 9, 3, 10, 0);
+  const p = new Pipeline({ namespace: 'flobi', emit: () => {}, mode: 'demo', now: () => now });
+  try {
+    p.model.pods = [
+      { name: 'flobi-brand-1-aaaaa', service: 'flobi-brand', cpuLimit: 1000, cpuRequest: 100 },
+      { name: 'flobi-brand-1-bbbbb', service: 'flobi-brand', cpuLimit: 1000, cpuRequest: 100 },
+      { name: 'flobi-ai-1-ccccc', service: 'flobi-ai', cpuLimit: 0, cpuRequest: 0 },
+    ];
+    const use = (name, cpu) => ({ metadata: { name }, containers: [{ name: 'app', usage: { cpu, memory: '1Mi' } }] });
+    for (let i = 0; i < 3; i++) {
+      p.setMetrics({ pods: [use('flobi-brand-1-aaaaa', `${100 * (i + 1)}m`), use('flobi-brand-1-bbbbb', '100m'), use('flobi-ai-1-ccccc', '250m')], at: now });
+      now += 15_000;
+    }
+    const brand = p.cpuSpark('flobi-brand');
+    assert.equal(brand.unit, 'pct');
+    assert.deepEqual(brand.points.map((v) => Math.round(v * 1000) / 1000), [0.1, 0.2, 0.3], 'the busier pod, not the two averaged');
+    const ai = p.cpuSpark('flobi-ai');
+    assert.equal(ai.unit, 'cores', 'no limit or request: cores, not a made-up %');
+    assert.deepEqual(ai.points, [0.25, 0.25, 0.25]);
+    assert.equal(p.cpuSpark('flobi-users'), null);
+    // An hour later the oldest points are gone.
+    now += 60 * 60_000;
+    p.setMetrics({ pods: [use('flobi-brand-1-aaaaa', '100m'), use('flobi-brand-1-bbbbb', '100m')], at: now });
+    assert.equal(p.cpuSpark('flobi-brand'), null, 'one fresh point is not a line');
+    assert.equal(p.serviceCpu.has('flobi-ai'), false);
+  } finally {
+    p.destroy();
+  }
+});

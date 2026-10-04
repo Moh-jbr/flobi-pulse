@@ -69,7 +69,7 @@ export default function SignIn({ info }) {
       />
       <div className="drag absolute top-0 inset-x-0 h-11 z-10" />
       <div className={cx('relative h-full grid place-items-center p-8', mac && 'pt-12')}>
-        <div className={cx('glass-strong rounded-[30px] w-[420px] px-9 pt-9 pb-7 flex flex-col items-center text-center animate-sheet transition-shadow', drag && 'shadow-[0_0_0_3px_var(--accent),var(--shadow-pop)]')}>
+        <div className={cx('glass-strong rounded-[14px] w-[420px] px-9 pt-9 pb-7 flex flex-col items-center text-center animate-sheet transition-shadow', drag && 'shadow-[0_0_0_3px_var(--accent),var(--shadow-pop)]')}>
           <img src="./icon.png" alt="" className="w-[76px] h-[76px] drop-shadow-xl" />
           <h1 className="text-large-title font-bold tracking-[-0.02em] mt-4">Flobi Pulse</h1>
           <p className="text-body text-label-2 mt-1.5 max-w-[300px]">Live health for the whole Flobi platform — every service, request, error and crash.</p>
@@ -82,7 +82,7 @@ export default function SignIn({ info }) {
           </div>
 
           {error && (
-            <div className="w-full mt-4 rounded-[14px] bg-red-tint px-3.5 py-2.5 text-callout text-left flex gap-2 animate-rise">
+            <div className="w-full mt-4 rounded-[10px] bg-red-tint px-3.5 py-2.5 text-callout text-left flex gap-2 animate-rise">
               <Icon name="errors" size={15} className="text-red shrink-0 mt-px" />
               <span className="selectable break-words min-w-0">{error}</span>
             </div>

@@ -121,7 +121,7 @@ export function DatabaseKey({ compact = false }) {
   return (
     <div className="px-4 py-2.5">
       <div className="flex items-center gap-4 min-h-12">
-        <div className="w-7 h-7 rounded-[8px] grid place-items-center shrink-0 text-white bg-teal">
+        <div className="w-7 h-7 rounded-[8px] grid place-items-center shrink-0 text-label-2 bg-fill-3">
           <Icon name="key" size={15} strokeWidth={1.9} />
         </div>
         <div className="min-w-0 flex-1">

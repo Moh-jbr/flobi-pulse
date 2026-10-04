@@ -19,7 +19,7 @@ export default function Toasts() {
     <div data-toasts="" className="fixed bottom-4 right-4 z-toast flex flex-col w-[360px] max-w-[calc(100vw-32px)] no-drag pointer-events-none">
       <div role="alert" aria-live="assertive">
         {alarm?.ringing && (
-          <div className={cx('pointer-events-auto rounded-[18px] p-3 flex items-center gap-3 bg-red text-white animate-alarm', toasts.length > 0 && 'mb-2')}>
+          <div className={cx('pointer-events-auto rounded-[12px] p-3 flex items-center gap-3 bg-red text-white animate-alarm', toasts.length > 0 && 'mb-2')}>
             <div className="w-9 h-9 rounded-full bg-white/20 grid place-items-center shrink-0">
               <Icon name="bell" size={17} strokeWidth={2} className="animate-bell" />
             </div>
@@ -37,7 +37,7 @@ export default function Toasts() {
       </div>
       <div aria-live="polite" aria-relevant="additions" className="flex flex-col gap-2">
         {toasts.map((t) => (
-          <div key={t.id} className="pointer-events-auto glass-strong rounded-[18px] p-3 flex gap-3 animate-toast">
+          <div key={t.id} className="pointer-events-auto glass-strong rounded-[12px] p-3 flex gap-3 animate-toast">
             <div className={cx('w-8 h-8 rounded-full grid place-items-center shrink-0', t.severity === 'critical' ? 'bg-red-tint' : t.severity === 'warning' ? 'bg-orange-tint' : 'bg-accent-tint')}>
               <Icon name={t.icon || (t.severity === 'critical' ? 'bolt' : t.severity === 'warning' ? 'errors' : 'bell')} size={15} strokeWidth={2} className={t.severity === 'critical' ? 'text-red' : t.severity === 'warning' ? 'text-orange' : 'text-accent'} />
             </div>

@@ -39,7 +39,7 @@ function FluidSparkline({ className, height = 28, ...rest }) {
   );
 }
 
-function SparklineSvg({ data, width = 96, height = 28, color = 'var(--accent)', area = true, className, max, strokeWidth = 1.5 }) {
+function SparklineSvg({ data, width = 96, height = 28, color = 'var(--accent)', area = true, className, max, strokeWidth = 1.5, dot = true }) {
   const path = useMemo(() => {
     const vals = (data || []).map((d) => (typeof d === 'number' ? d : d?.v ?? 0));
     if (vals.length < 2) return null;
@@ -54,7 +54,7 @@ function SparklineSvg({ data, width = 96, height = 28, color = 'var(--accent)', 
     <svg width={width} height={height} className={cx('overflow-visible', className)} aria-hidden="true">
       {area && <path d={path.area} fill={color} opacity="0.1" />}
       <path d={path.line} fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinejoin="round" strokeLinecap="round" />
-      <circle cx={path.last[0]} cy={path.last[1]} r="2.5" fill={color} stroke="var(--bg-elevated)" strokeWidth="1.5" />
+      {dot && <circle cx={path.last[0]} cy={path.last[1]} r="2.5" fill={color} stroke="var(--bg-elevated)" strokeWidth="1.5" />}
     </svg>
   );
 }

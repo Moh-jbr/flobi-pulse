@@ -44,7 +44,11 @@ process.on('unhandledRejection', (e) => console.error('[main] unhandled rejectio
 // so they no longer matched the content; on Windows it also made scrolling laggy.
 
 app.setName('Flobi Pulse');
-if (isWin) app.setAppUserModelId('ai.flobi.pulse');
+// Run from source, the app takes an id of its own: sharing the installed app's id
+// made Windows show the installed copy's taskbar icon (and its cached old one)
+// instead of the icon this checkout carries.
+const APP_ID = app.isPackaged ? 'ai.flobi.pulse' : 'ai.flobi.pulse.dev';
+if (isWin) app.setAppUserModelId(APP_ID);
 if (!app.requestSingleInstanceLock()) {
   app.quit();
   process.exit(0);
@@ -290,6 +294,7 @@ function publicInfo() {
       fal: { hasKey: !!secrets.get('falKey') },
     },
     uptime: c.uptime,
+    uptimeHiddenPages: c.uptimeHiddenPages,
     update: updater?.state || null,
     versions: versionsState(),
     costs: costs?.state() ?? null,
@@ -312,7 +317,7 @@ function createWindow() {
     title: 'Flobi Pulse',
     icon: path.join(__dirname, 'assets', 'icon.png'),
     // Same as --bg-content, so the first paint doesn't flash a different shade.
-    backgroundColor: dark ? '#161618' : '#ffffff',
+    backgroundColor: dark ? '#000000' : '#ffffff',
     titleBarStyle: isMac ? 'hiddenInset' : 'hidden',
     ...(isMac ? { trafficLightPosition: { x: 22, y: 22 } } : {}),
     ...(isWin ? { titleBarOverlay: { color: '#00000000', symbolColor: dark ? '#f5f5f7' : '#1d1d1f', height: 52 } } : {}),
@@ -332,7 +337,7 @@ function createWindow() {
   // its name and icon from its Start menu shortcut; this gives the dev window the same.
   if (isWin && !app.isPackaged) {
     win.setAppDetails({
-      appId: 'ai.flobi.pulse',
+      appId: APP_ID,
       appIconPath: path.join(__dirname, 'assets', 'icon.ico'),
       relaunchCommand: `"${process.execPath}" "${app.getAppPath()}"`,
       relaunchDisplayName: 'Flobi Pulse',
@@ -581,7 +586,8 @@ function legacyKnownErrorsInUse() {
 /**
  * What gets saved together with lastSeenAt: known error types, each pod's
  * restart count so the next recap can tell exactly what restarted in between,
- * and what's silenced or muted. Live only: nothing from demo mode is saved.
+ * what's silenced or muted, and the service cards' last hour of CPU and memory.
+ * Live only: nothing from demo mode is saved.
  */
 function awayState() {
   if (!pipeline || mode !== 'live') return {};
@@ -589,6 +595,8 @@ function awayState() {
   const snap = pipeline.restartSnapshot();
   if (snap) out.restartSnapshot = snap;
   out.alertSilence = pipeline.alerts.stateToSave();
+  const usage = pipeline.usageToSave();
+  if (usage) out.usageLines = usage;
   return out;
 }
 
@@ -614,7 +622,8 @@ async function stopConnectorNow() {
   // restart (e.g. after waking up) still knows where the recap should start.
   if (pipeline && mode === 'live') {
     clearTimeout(historyTimer);
-    await stateStore.update({ ...knownErrorsToSave(pipeline), alertHistory: pipeline.historyToSave(), alertSilence: pipeline.alerts.stateToSave() });
+    const usage = pipeline.usageToSave();
+    await stateStore.update({ ...knownErrorsToSave(pipeline), alertHistory: pipeline.historyToSave(), alertSilence: pipeline.alerts.stateToSave(), ...(usage && { usageLines: usage }) });
   } else if (pipeline && mode === 'demo') demoAlertState = pipeline.alerts.stateToSave();
   pipeline?.destroy();
   pipeline = null;
@@ -631,6 +640,8 @@ async function startLiveNow({ recapSince } = {}) {
   // Separate copies: the pipeline adds to its map as errors come in, while the
   // recap compares against what was known before.
   const p = newPipeline('live', { knownErrors: { ...st.knownErrorsV2 }, legacyKnownErrors: legacy });
+  // The cards' lines carry on from where the last session left them, up to an hour back.
+  p.restoreUsage(st.usageLines);
   connector = new LiveConnector({ config: config(), auth, dbAuth: databaseAuth(), pipeline: p, settings: settingsStore.get(), lastSeenAt: recapSince ?? st.lastSeenAt ?? null, knownErrors: { ...st.knownErrorsV2 }, legacyKnownErrors: legacy, restartSnapshot: st.restartSnapshot || null, pastWeekCache, connectivity });
   await connector.start();
   let lastBeat = Date.now();
@@ -913,6 +924,18 @@ const commands = {
       .filter((t) => /^https:\/\//.test(t.url))
       .map((t, i) => ({ id: t.id || `u${i}-${t.url}`, name: String(t.name || new URL(t.url).host).slice(0, 60), url: t.url, group: t.group === 'frontend' ? 'frontend' : 'backend' }));
     await settingsStore.update({ overrides: { ...settingsStore.get().overrides, uptime: clean } });
+    await restartLive();
+    return publicInfo();
+  },
+
+  // Stop (or start again) checking a Pages project that isn't on the uptime list.
+  'uptime:hidePages': async ({ name, hidden }) => {
+    if (typeof name !== 'string' || !/^[A-Za-z0-9._-]{1,100}$/.test(name)) throw new Error('Not a Pages project name');
+    const o = settingsStore.get().overrides || {};
+    const list = new Set(Array.isArray(o.uptimeHiddenPages) ? o.uptimeHiddenPages : []);
+    if (hidden) list.add(name);
+    else list.delete(name);
+    await settingsStore.update({ overrides: { ...o, uptimeHiddenPages: [...list] } });
     await restartLive();
     return publicInfo();
   },

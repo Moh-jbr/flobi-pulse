@@ -30,11 +30,11 @@ export const SEV_TONE = { critical: 'red', warning: 'orange', info: 'accent' };
 export function Button({ variant = 'secondary', size = 'md', icon, iconRight, children, className, loading, disabled, ...rest }) {
   const sizes = { sm: 'h-6 px-2.5 text-callout gap-1', md: 'h-7 px-3 text-body gap-1.5', lg: 'h-9 px-4 text-title3 gap-2' };
   const variants = {
-    primary: 'bg-accent text-white shadow-[0_1px_2px_rgb(0_0_0/0.12),inset_0_0.5px_0_rgb(255_255_255/0.35)] hover:brightness-110',
-    secondary: 'bg-fill-3 hover:bg-fill-2 text-label',
+    primary: 'bg-accent text-on-accent hover:opacity-85',
+    secondary: 'bg-fill-3 hover:bg-fill-2 text-label shadow-[inset_0_0_0_1px_var(--line)]',
     glass: 'glass text-label',
     plain: 'hover:bg-fill-3 text-label',
-    tinted: 'bg-accent-tint text-accent hover:brightness-105',
+    tinted: 'bg-accent-tint text-accent hover:bg-fill-2',
     danger: 'bg-red-tint text-red hover:brightness-105',
   };
   return (
@@ -61,7 +61,7 @@ export function IconButton({ icon, label, active, className, size = 28, iconSize
       className={cx(
         'no-drag press relative inline-flex shrink-0 items-center justify-center rounded-full text-label-2 hover:text-label',
         variant === 'glass' ? 'glass' : 'hover:bg-fill-3',
-        active && 'bg-accent-tint !text-accent',
+        active && 'bg-fill-2 !text-label',
         className,
       )}
       style={{ width: size, height: size }}
@@ -246,10 +246,10 @@ export function Segmented({ value, onChange, options, size = 'md', className, la
   };
   const h = size === 'sm' ? 'h-6' : 'h-7';
   return (
-    <div ref={ref} role="radiogroup" aria-label={label} onKeyDown={onKeyDown} className={cx('no-drag relative inline-flex items-center p-0.5 rounded-full bg-fill-3', h, className)}>
+    <div ref={ref} role="radiogroup" aria-label={label} onKeyDown={onKeyDown} className={cx('no-drag relative inline-flex items-center p-0.5 rounded-[8px] bg-fill-4 shadow-[inset_0_0_0_1px_var(--line)]', h, className)}>
       {thumb && (
         <span
-          className="absolute top-0.5 bottom-0.5 rounded-full bg-thumb shadow-[0_1px_3px_rgb(0_0_0/0.14),0_0_0_0.5px_rgb(0_0_0/0.05)]"
+          className="absolute top-0.5 bottom-0.5 rounded-[6px] bg-thumb shadow-[0_1px_2px_rgb(0_0_0/0.08),inset_0_0_0_1px_var(--line-strong)]"
           style={{ left: thumb.left, width: thumb.width, transition: 'left 420ms var(--ease-spring), width 420ms var(--ease-spring)' }}
         />
       )}
@@ -262,7 +262,7 @@ export function Segmented({ value, onChange, options, size = 'md', className, la
           tabIndex={o.value === value || (current < 0 && i === 0) ? 0 : -1}
           type="button"
           onClick={() => onChange(o.value)}
-          className={cx('relative z-10 h-full px-3 rounded-full inline-flex items-center gap-1.5 whitespace-nowrap transition-colors duration-200', size === 'sm' ? 'text-callout' : 'text-body', o.value === value ? 'text-label font-semibold' : 'text-label-2 hover:text-label')}
+          className={cx('relative z-10 h-full px-3 rounded-[6px] inline-flex items-center gap-1.5 whitespace-nowrap transition-colors duration-200', size === 'sm' ? 'text-callout' : 'text-body', o.value === value ? 'text-label font-medium' : 'text-label-2 hover:text-label')}
         >
           {o.dot && <StatusDot tone={o.dot} size={6} />}
           {o.label}
@@ -304,7 +304,7 @@ export function TextField({ value, onChange, placeholder, type = 'text', classNa
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
       spellCheck={false}
-      className={cx('no-drag h-8 w-full rounded-lg bg-fill-4 px-3 text-body outline-none shadow-[inset_0_0_0_0.5px_var(--separator)] focus:shadow-[0_0_0_3px_var(--accent-tint),inset_0_0_0_1px_var(--accent)] placeholder:text-label-3 transition-shadow', mono && 'font-mono text-callout', className)}
+      className={cx('no-drag h-8 w-full rounded-lg bg-fill-4 px-3 text-body outline-none shadow-[inset_0_0_0_1px_var(--line)] focus:shadow-[0_0_0_3px_var(--accent-tint),inset_0_0_0_1px_var(--label-3)] placeholder:text-label-3 transition-shadow', mono && 'font-mono text-callout', className)}
       {...rest}
     />
   );
@@ -321,7 +321,7 @@ export function Toggle({ checked, onChange, label }) {
       className={cx('no-drag relative w-[38px] h-[22px] rounded-full shrink-0 transition-colors duration-300', checked ? 'bg-accent' : 'bg-fill-1')}
     >
       <span
-        className="absolute top-[2px] left-[2px] w-[18px] h-[18px] rounded-full bg-white shadow-[0_1px_3px_rgb(0_0_0/0.25)]"
+        className={cx('absolute top-[2px] left-[2px] w-[18px] h-[18px] rounded-full shadow-[0_1px_3px_rgb(0_0_0/0.25)]', checked ? 'bg-on-accent' : 'bg-white')}
         style={{ transform: `translateX(${checked ? 16 : 0}px)`, transition: 'transform 460ms var(--ease-spring)' }}
       />
     </button>
@@ -507,7 +507,7 @@ export function Sheet({ open, onClose, children, width = 720, className, label }
   return createPortal(
     <div className="fixed inset-0 z-sheet grid place-items-center p-8 no-drag" data-layer="sheet">
       <div className="absolute inset-0 animate-fade" style={{ background: 'var(--scrim)' }} onClick={onClose} />
-      <div ref={box} role="dialog" aria-modal="true" aria-label={label} tabIndex={-1} className={cx('relative glass-strong rounded-[26px] animate-sheet max-h-full flex flex-col overflow-hidden outline-none', className)} style={{ width }}>
+      <div ref={box} role="dialog" aria-modal="true" aria-label={label} tabIndex={-1} className={cx('relative glass-strong rounded-[14px] animate-sheet max-h-full flex flex-col overflow-hidden outline-none', className)} style={{ width }}>
         {children}
       </div>
     </div>,
@@ -553,7 +553,7 @@ export function Popover({ open, onClose, anchor, children, width = 380, align = 
         aria-label={label}
         tabIndex={-1}
         onKeyDown={onKeyDown}
-        className="absolute glass-strong rounded-[20px] animate-sheet overflow-hidden flex flex-col outline-none"
+        className="absolute glass-strong rounded-[14px] animate-sheet overflow-hidden flex flex-col outline-none"
         // Until measured (never painted: the layout effect places it first) it sits at the top left.
         style={pos ? { top: pos.top, bottom: pos.bottom, left: pos.left, width: pos.width, maxHeight: pos.maxHeight, transformOrigin: `${pos.up ? 'bottom' : 'top'} ${side}` } : { top: 0, left: 0, width: Math.min(width, window.innerWidth - 16) }}
       >

@@ -318,15 +318,18 @@ function hpaFor(name, hpas, scaledobjects) {
 
 export function serviceHealth(svc) {
   const reasons = [];
+  // Which of the card's figures each problem comes from (pods, restarts, mem, cpu), so it can colour them.
+  const causes = new Set();
   let health = 'healthy';
   const bump = (h) => {
     const order = { healthy: 0, deploying: 1, degraded: 2, down: 3 };
     if (order[h] > order[health]) health = h;
   };
-  if (svc.desired === 0) return { health: 'idle', reasons: ['Scaled to zero'] };
+  if (svc.desired === 0) return { health: 'idle', reasons: ['Scaled to zero'], causes: [] };
   const bad = svc.podList.filter((p) => p.state === 'bad');
   if (svc.ready === 0) {
     bump('down');
+    causes.add('pods');
     reasons.push(`0 of ${svc.desired} pods ready`);
   } else if (svc.ready < svc.desired) {
     if (svc.rollingOut) {
@@ -334,6 +337,7 @@ export function serviceHealth(svc) {
       reasons.push(`Rolling out (${svc.updated}/${svc.desired} updated)`);
     } else {
       bump('degraded');
+      causes.add('pods');
       reasons.push(`${svc.ready} of ${svc.desired} pods ready`);
     }
   } else if (svc.rollingOut) {
@@ -348,22 +352,26 @@ export function serviceHealth(svc) {
   }
   for (const p of bad) {
     bump(svc.ready === 0 ? 'down' : 'degraded');
+    causes.add('pods');
     const oom = p.lastTermination?.reason === 'OOMKilled';
     reasons.push(`${p.name.replace(`${svc.name}-`, '…')} ${p.status}${oom && p.status !== 'OOMKilled' ? ' (OOMKilled)' : ''}`);
   }
   if (svc.recentRestarts > 0) {
     bump('degraded');
+    causes.add('restarts');
     reasons.push(`${svc.recentRestarts} restart${svc.recentRestarts > 1 ? 's' : ''} in the last 15 min`);
   }
   if (svc.memPct != null && svc.memPct >= 0.9) {
     bump('degraded');
+    causes.add('mem');
     reasons.push(`Memory at ${Math.round(svc.memPct * 100)}% of limit`);
   }
   if (svc.scaling?.atMax && svc.scaling.cpuTarget && svc.scaling.cpuNow > svc.scaling.cpuTarget) {
     bump('degraded');
+    causes.add('cpu');
     reasons.push(`At max replicas (${svc.scaling.max}) and CPU still ${svc.scaling.cpuNow}%`);
   }
-  return { health, reasons };
+  return { health, reasons, causes: [...causes] };
 }
 
 /**
@@ -453,9 +461,10 @@ export function buildModel(raw, { podMetrics = new Map(), nodeMetrics = new Map(
       hosts: routes.filter((r) => workloadForK8sService(r.service) === name).map((r) => `${r.host}${r.path === '/' ? '' : r.path}`),
       createdAt: t(d.metadata.creationTimestamp),
     };
-    const { health, reasons } = serviceHealth(svc);
+    const { health, reasons, causes } = serviceHealth(svc);
     svc.health = health;
     svc.reasons = reasons;
+    svc.causes = causes;
     delete svc.podList;
     return svc;
   });

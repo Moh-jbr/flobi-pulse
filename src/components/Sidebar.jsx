@@ -59,28 +59,28 @@ const SOURCES = [
   ['kubernetes', 'Cluster'],
   ['live', 'Live'],
   ['cloudsql', 'Database'],
+  ['metrics', 'Metrics'],
   ['sentry', 'Sentry'],
   ['cloudflare', 'Cloudflare'],
 ];
-const SOURCES_SHOWN = 3;
+const sourceTone = (st) => (st === 'degraded' || st === 'unavailable' ? 'orange' : 'red');
+const SOURCE_FINE = new Set([undefined, null, 'ok', 'streaming', 'connecting', 'off', 'offline']);
 
-/** One row: the first few data sources with their status, "+2" for the rest (all of them in the tooltip). Opens Settings. */
-function SourceDots({ sources }) {
-  const tone = (st) => (!st ? 'gray' : st === 'ok' || st === 'streaming' ? 'green' : st === 'connecting' ? 'accent' : st === 'off' || st === 'offline' ? 'gray' : st === 'degraded' || st === 'unavailable' ? 'orange' : 'red');
+/** Nothing while every data source works; a source that stops working gets a line here (it opens Settings). */
+function SourceTrouble({ sources }) {
+  const broken = SOURCES.filter(([k]) => !SOURCE_FINE.has(sources?.[k]?.status));
+  if (!broken.length) return null;
   return (
     <button
       type="button"
-      onClick={() => navigate('settings')}
-      title={SOURCES.map(([k, l]) => `${l}: ${sources?.[k]?.status || 'waiting'}${sources?.[k]?.message ? ` — ${sources[k].message}` : ''}`).join('\n')}
-      className="no-drag w-full h-6 px-2.5 rounded-[8px] flex items-center gap-2.5 text-footnote text-label-3 hover:text-label-2 hover:bg-fill-4 whitespace-nowrap overflow-hidden"
+      onClick={() => navigate({ to: 'settings', tab: 'sources' })}
+      title={broken.map(([k, l]) => `${l}: ${sources[k].status}${sources[k].message ? ` — ${sources[k].message}` : ''}`).join('\n')}
+      className="no-drag w-full h-6 mb-2 px-2.5 rounded-[8px] flex items-center gap-2 text-footnote text-label-2 hover:bg-fill-4 whitespace-nowrap overflow-hidden"
     >
-      {SOURCES.slice(0, SOURCES_SHOWN).map(([k, l]) => (
-        <span key={k} className="inline-flex items-center gap-1 min-w-0">
-          <StatusDot tone={tone(sources?.[k]?.status)} size={6} />
-          <span className="truncate">{l}</span>
-        </span>
-      ))}
-      <span className="ml-auto shrink-0">+{SOURCES.length - SOURCES_SHOWN}</span>
+      <StatusDot tone={broken.some(([k]) => sourceTone(sources[k].status) === 'red') ? 'red' : 'orange'} size={6} />
+      <span className="truncate">
+        {broken.length === 1 ? `${broken[0][1]} isn’t working` : `${broken.map(([, l]) => l).join(', ')} aren’t working`}
+      </span>
     </button>
   );
 }
@@ -128,12 +128,12 @@ export default function Sidebar() {
   const width = useWindowWidth();
   if (width < 1200) {
     return (
-      <aside className="w-[76px] shrink-0 p-2 pr-0 drag">
-        <div className="glass-panel h-full rounded-[20px] flex flex-col items-center overflow-hidden">
+      <aside className="w-[68px] shrink-0 drag">
+        <div className="h-full bg-content shadow-[inset_-1px_0_0_var(--line)] flex flex-col items-center overflow-hidden">
           <div className={cx('shrink-0', mac ? 'pt-[46px] pb-2' : 'pt-4 pb-2')}>
             <img src="./icon.png" alt="" className="w-[26px] h-[26px] rounded-[7px]" onError={(e) => (e.currentTarget.style.display = 'none')} title={`Flobi Pulse · ${session?.mode === 'demo' ? 'Demo' : 'Prod'}`} />
           </div>
-          <button type="button" onClick={() => navigate('overview')} title={`${health?.headline || 'Connecting…'}${healthLine(health) ? `\n${healthLine(health)}` : ''}`} className="no-drag press w-11 h-11 [@media(max-height:720px)]:h-9 mb-1 rounded-[14px] grid place-items-center bg-fill-4 hover:bg-fill-3">
+          <button type="button" onClick={() => navigate('overview')} title={`${health?.headline || 'Connecting…'}${healthLine(health) ? `\n${healthLine(health)}` : ''}`} className="no-drag press w-11 h-11 [@media(max-height:720px)]:h-9 mb-1 rounded-[10px] grid place-items-center bg-fill-4 hover:bg-fill-3">
             <StatusDot tone={o.tone} pulse={health?.overall === 'operational' || health?.overall === 'outage'} size={11} />
           </button>
           <nav className="no-drag flex-1 min-h-0 w-full overflow-y-auto px-2 pb-2 flex flex-col items-center">
@@ -143,9 +143,9 @@ export default function Sidebar() {
                   const active = view === it.id;
                   const b = badges[it.id];
                   return (
-                    <button key={it.id} type="button" onClick={() => navigate(it.id)} title={b ? `${it.label} · ${b.text}` : it.label} aria-label={it.label} className={cx('relative w-11 h-10 [@media(max-height:720px)]:h-8 rounded-[12px] grid place-items-center transition-colors duration-150', active ? 'bg-fill-2' : 'hover:bg-fill-4')}>
-                      <Icon name={it.icon} size={18} className="text-accent" strokeWidth={1.7} />
-                      {b && (b.tone === 'red' || b.tone === 'orange') && <span className={cx('absolute top-1 right-1 min-w-[16px] h-4 px-1 rounded-full text-[10px] leading-4 font-semibold text-white text-center tabular', b.tone === 'red' ? 'bg-red' : 'bg-orange')}>{b.text}</span>}
+                    <button key={it.id} type="button" onClick={() => navigate(it.id)} title={b ? `${it.label} · ${b.text}` : it.label} aria-label={it.label} className={cx('group relative w-11 h-10 [@media(max-height:720px)]:h-8 rounded-[8px] grid place-items-center transition-colors duration-150', active ? 'bg-fill-2' : 'hover:bg-fill-4')}>
+                      <Icon name={it.icon} size={18} className={cx('transition-colors duration-150', active ? 'text-label' : 'text-label-3 group-hover:text-label')} strokeWidth={1.7} />
+                      {b && (b.tone === 'red' || b.tone === 'orange') && <span className={cx('absolute top-1 right-1 min-w-[16px] h-4 px-1 rounded-full text-[10px] leading-4 font-semibold text-center tabular', b.tone === 'red' ? 'bg-red text-white' : 'bg-orange text-black')}>{b.text}</span>}
                     </button>
                   );
                 })}
@@ -153,10 +153,10 @@ export default function Sidebar() {
             ))}
           </nav>
           <div className="no-drag shrink-0 pb-2 pt-2 w-full flex flex-col items-center gap-1.5 hairline-t">
-            <button type="button" title={settingsTip} aria-label="Settings" onClick={() => navigate('settings')} className={cx('w-11 h-10 [@media(max-height:720px)]:h-8 rounded-[12px] grid place-items-center text-label-2 hover:text-label hover:bg-fill-4', view === 'settings' && 'text-accent bg-fill-2')}>
+            <button type="button" title={settingsTip} aria-label="Settings" onClick={() => navigate('settings')} className={cx('w-11 h-10 [@media(max-height:720px)]:h-8 rounded-[8px] grid place-items-center text-label-2 hover:text-label hover:bg-fill-4', view === 'settings' && 'text-label bg-fill-3')}>
               <Icon name="settings" size={18} />
             </button>
-            <div title={`${identity?.name || 'Signed in'}${identity?.email ? ` · ${identity.email}` : ''}`} className="w-8 h-8 rounded-[10px] bg-accent-tint text-accent grid place-items-center text-subheadline font-semibold">
+            <div title={`${identity?.name || 'Signed in'}${identity?.email ? ` · ${identity.email}` : ''}`} className="w-8 h-8 rounded-[8px] bg-fill-3 text-label grid place-items-center text-subheadline font-semibold">
               {initials}
             </div>
           </div>
@@ -166,8 +166,8 @@ export default function Sidebar() {
   }
 
   return (
-    <aside className="w-[244px] shrink-0 p-2 pr-0 drag">
-      <div className="glass-panel h-full rounded-[20px] flex flex-col overflow-hidden">
+    <aside className="w-[232px] shrink-0 drag">
+      <div className="h-full bg-content shadow-[inset_-1px_0_0_var(--line)] flex flex-col overflow-hidden">
         <div className={cx('shrink-0 flex items-center gap-2 px-[18px]', mac ? 'pt-[46px] pb-2' : 'pt-4 pb-2')}>
           <img src="./icon.png" alt="" className="w-[22px] h-[22px] rounded-[6px]" onError={(e) => (e.currentTarget.style.display = 'none')} />
           <span className="text-headline font-semibold tracking-[-0.01em]">Flobi Pulse</span>
@@ -179,7 +179,7 @@ export default function Sidebar() {
         <button
           type="button"
           onClick={() => navigate('overview')}
-          className="no-drag press mx-2 mt-1 mb-2 px-2.5 py-3 rounded-[12px] text-left bg-fill-4 hover:bg-fill-3 transition-colors"
+          className="no-drag press mx-2 mt-1 mb-2 px-2.5 py-3 rounded-[8px] text-left bg-elevated shadow-[inset_0_0_0_1px_var(--line)] hover:bg-fill-4 transition-colors"
         >
           <div className="flex items-start gap-2.5">
             <StatusDot className="mt-[4px] mx-[3.5px]" tone={o.tone} pulse={health?.overall === 'operational' || health?.overall === 'outage'} size={9} />
@@ -191,7 +191,7 @@ export default function Sidebar() {
         <nav className="no-drag flex-1 min-h-0 overflow-y-auto px-2 pb-2">
           {NAV_GROUPS.map((g) => (
             <div key={g.title} className="mt-2 first:mt-0">
-              <div className="px-2.5 pt-2 pb-1 text-subheadline font-semibold text-label-3">{g.title}</div>
+              <div className="px-2.5 pt-2 pb-1 text-footnote font-medium uppercase tracking-[0.08em] text-label-3">{g.title}</div>
               {g.items.map((it) => {
                 const active = view === it.id;
                 const b = badges[it.id];
@@ -200,12 +200,12 @@ export default function Sidebar() {
                     key={it.id}
                     type="button"
                     onClick={() => navigate(it.id)}
-                    className={cx('w-full h-8 px-2.5 rounded-[10px] flex items-center gap-2.5 text-body transition-colors duration-150', active ? 'bg-fill-2 font-medium' : 'hover:bg-fill-4')}
+                    className={cx('group w-full h-8 px-2.5 rounded-[8px] flex items-center gap-2.5 text-body transition-colors duration-150', active ? 'bg-fill-3 text-label font-medium' : 'text-label-2 hover:bg-fill-4 hover:text-label')}
                   >
-                    <Icon name={it.icon} size={16} className={cx(active ? 'text-accent' : 'text-accent/90')} strokeWidth={1.7} />
+                    <Icon name={it.icon} size={16} className={cx('transition-colors duration-150', active ? 'text-label' : 'text-label-3 group-hover:text-label')} strokeWidth={1.7} />
                     <span className="flex-1 text-left truncate">{it.label}</span>
                     {b && (
-                      <span className={cx('tabular text-subheadline', b.tone === 'red' ? 'min-w-[18px] h-[18px] px-1.5 rounded-full bg-red text-white font-semibold grid place-items-center' : b.tone === 'orange' ? 'min-w-[18px] h-[18px] px-1.5 rounded-full bg-orange text-white font-semibold grid place-items-center' : 'text-label-3')}>
+                      <span className={cx('tabular text-subheadline', b.tone === 'red' ? 'min-w-[18px] h-[18px] px-1.5 rounded-full bg-red text-white font-semibold grid place-items-center' : b.tone === 'orange' ? 'min-w-[18px] h-[18px] px-1.5 rounded-full bg-orange text-black font-semibold grid place-items-center' : 'text-label-3')}>
                         {b.text}
                       </span>
                     )}
@@ -217,14 +217,14 @@ export default function Sidebar() {
         </nav>
 
         <div className="no-drag shrink-0 px-2 pb-2 pt-2 hairline-t">
-          <SourceDots sources={sources} />
-          <div className="mt-2 flex items-center gap-2.5 py-1.5 pl-2.5 pr-1 rounded-[12px] hover:bg-fill-4 transition-colors">
-            <div className="w-7 h-7 rounded-[9px] bg-accent-tint text-accent grid place-items-center text-subheadline font-semibold shrink-0">{initials}</div>
+          <SourceTrouble sources={sources} />
+          <div className="flex items-center gap-2.5 py-1.5 pl-2.5 pr-1 rounded-[8px] hover:bg-fill-4 transition-colors">
+            <div className="w-7 h-7 rounded-full bg-fill-3 text-label-2 grid place-items-center text-subheadline font-semibold shrink-0">{initials}</div>
             <div className="min-w-0 flex-1">
               <div className="text-callout font-medium truncate">{identity?.name || 'Signed in'}</div>
               <div className="text-footnote text-label-3 truncate">{identity?.kind === 'service-account' ? 'Service account' : identity?.kind === 'demo' ? 'Simulated data' : identity?.email}</div>
             </div>
-            <button type="button" title={settingsTip} aria-label="Settings" onClick={() => navigate('settings')} className={cx('w-7 h-7 rounded-full grid place-items-center text-label-2 hover:text-label hover:bg-fill-3', view === 'settings' && 'text-accent bg-accent-tint')}>
+            <button type="button" title={settingsTip} aria-label="Settings" onClick={() => navigate('settings')} className={cx('w-7 h-7 rounded-full grid place-items-center text-label-2 hover:text-label hover:bg-fill-3', view === 'settings' && 'text-label bg-fill-3')}>
               <Icon name="settings" size={16} />
             </button>
           </div>

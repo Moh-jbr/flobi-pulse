@@ -220,7 +220,7 @@ export default function Database() {
             <Tile info={INFO.deadlocks} label="Deadlocks" value={num(stats.deadlocks1h || 0)} sub="last hour" tone={stats.deadlocks1h ? 'orange' : null} />
             <Tile info={INFO.slow} label="Slow queries" value={num(stats.slow1h || 0)} sub="logged · last hour" />
           </div>
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-3 mt-3">
+          <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] items-start gap-3 mt-3">
             <Card>
               <div className="text-headline font-semibold mb-3 flex items-center gap-1.5">
                 Setup

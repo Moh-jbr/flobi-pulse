@@ -1,0 +1,42 @@
+# Runs the tests on every pull request and on every push to main, so a change
+# that breaks them is caught before a release tag (release.yml runs them too,
+# but only once a version is already being built).
+#
+# Cost: $0 on a public repo with GitHub's standard ubuntu runner.
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Read-only: the job runs third-party code (npm ci, the tests) and never needs
+# to write. Actions are pinned to full commit SHAs, as in release.yml.
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Tests and build
+    # Pinned, like the release's Linux build: ubuntu-latest moves to Ubuntu 26 on 2026-10-19.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1' # the tests run in plain Node; the app itself isn't started
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm test
+      - run: npx vite build

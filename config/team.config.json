@@ -78,7 +78,7 @@
     },
     {
       "name": "Notes",
-      "url": "https://notes.flobi.ai/",
+      "url": "https://docs.flobi.ai/",
       "group": "frontend"
     },
     {
@@ -104,6 +104,21 @@
     {
       "name": "Handoff",
       "url": "https://handoff.flobi.ai/",
+      "group": "frontend"
+    },
+    {
+      "name": "Artwork",
+      "url": "https://artwork.flobi.ai/",
+      "group": "frontend"
+    },
+    {
+      "name": "Projects",
+      "url": "https://projects.flobi.ai/",
+      "group": "frontend"
+    },
+    {
+      "name": "Admin",
+      "url": "https://admin.flobi.ai/",
       "group": "frontend"
     }
   ]

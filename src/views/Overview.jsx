@@ -1,10 +1,10 @@
-import { useMemo, useState } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useStore, inspect, navigate } from '../lib/store.js';
 import { ViewScroll } from '../components/Toolbar.jsx';
-import { Card, SectionTitle, Segmented, HealthPill, StatusDot, Meter, cx, STATE_TONE, SEV_TONE, useNow, Empty } from '../components/ui.jsx';
+import { Card, SectionTitle, Segmented, HealthPill, Pill, StatusDot, cx, STATE_TONE, SEV_TONE, useNow, Empty } from '../components/ui.jsx';
 import { Sparkline, UptimeBars } from '../components/charts.jsx';
 import Icon from '../components/icons.jsx';
-import { compact, pct, ms, ago, short, num } from '../lib/format.js';
+import { compact, pct, ms, ago, short, num, clockHM } from '../lib/format.js';
 import ExportButton from '../components/ExportButton.jsx';
 import { RecoveringTag, SilencedTag } from './Recent.jsx';
 import { crashReason } from './Crashes.jsx';
@@ -49,14 +49,153 @@ function Stat({ label, value, sub, spark, tone, icon, onClick }) {
   );
 }
 
-function ServiceCard({ s }) {
+/**
+ * CPU and memory for a card: live from metrics-server against the pod's limit
+ * (or request), else what the service's autoscaler last measured, which is
+ * against the request. `why` says what a dash means when there's neither.
+ */
+function usageOf(s, metricsSource) {
+  const scaled = (v) => (v != null ? v / 100 : null);
+  const cpu = s.cpuPct ?? scaled(s.scaling?.cpuNow);
+  const mem = s.memPct ?? scaled(s.scaling?.memNow);
+  const fromScaler = (live, v) => live == null && v != null;
+  const st = metricsSource?.status;
+  const why = st && st !== 'ok' ? `Metrics server: ${st}${metricsSource.message ? ` — ${metricsSource.message}` : ''}` : !st ? 'Waiting for the metrics server' : 'No limit or request set, and no autoscaler measuring it';
+  const title = (live, v, what) => (v == null ? why : fromScaler(live, v) ? `${what} as % of its request, from the autoscaler` : `${what} as % of its limit (or request when it has no limit)`);
+  return { cpu, mem, cpuTitle: title(s.cpuPct, cpu, 'CPU'), memTitle: title(s.memPct, mem, 'Memory') };
+}
+
+const H = 34;
+const GAP = 2 * 60_000; // points further apart than this were a time the app was closed: the line breaks there
+
+/** Line and area paths for points on a time axis, broken wherever the app wasn't watching. 100 × H units. */
+function linePaths(times, values, x, y) {
+  let line = '';
+  let area = '';
+  let seg = [];
+  const flush = () => {
+    if (seg.length > 1) {
+      const d = seg.map((p, i) => `${i ? 'L' : 'M'}${p[0].toFixed(2)},${p[1].toFixed(2)}`).join('');
+      line += d;
+      area += `${d}L${seg[seg.length - 1][0].toFixed(2)},${H}L${seg[0][0].toFixed(2)},${H}Z`;
+    }
+    seg = [];
+  };
+  times.forEach((t, i) => {
+    if (i && t - times[i - 1] > GAP) flush();
+    seg.push([x(t), y(values[i])]);
+  });
+  flush();
+  return { line, area };
+}
+
+/**
+ * A card's last hour along its bottom edge, laid out by time:
+ * - CPU, solid, scaled to its own peak so a quiet service still shows its shape.
+ * - Memory, dashed, on 0–100% of the limit, so near the top means near the limit.
+ * - A mark where the service was deployed.
+ * Pointing at it says what both were at that moment, and names a deploy under the pointer.
+ */
+function UsageLine({ cpu, mem, deploys, max, color, memColor }) {
+  const [at, setAt] = useState(null); // a moment, ms
+  const boxRef = useRef(null);
+  const tipRef = useRef(null);
+  const ends = [cpu?.times, mem?.times].filter((t) => t?.length);
+  const until = Math.max(...ends.map((t) => t[t.length - 1]));
+  const since = Math.max(until - 60 * 60_000, Math.min(...ends.map((t) => t[0])));
+  const span = Math.max(1, until - since);
+  const x = (t) => ((t - since) / span) * 100;
+  const yOf = (m) => (v) => H - 1.25 - (Math.min(Math.max(v, 0), m) / m) * (H - 2.5);
+  const cpuPaths = cpu && linePaths(cpu.times, cpu.points, x, yOf(max));
+  const memPaths = mem && linePaths(mem.times, mem.points, x, yOf(1));
+  const marks = (deploys || []).filter((t) => t >= since && t <= until);
+  const nearest = (s) => {
+    if (!s || at == null) return null;
+    let best = 0;
+    for (let i = 1; i < s.times.length; i++) if (Math.abs(s.times[i] - at) < Math.abs(s.times[best] - at)) best = i;
+    return Math.abs(s.times[best] - at) <= GAP ? best : null;
+  };
+  const ci = nearest(cpu);
+  const mi = nearest(mem);
+  const deploy = at != null ? marks.find((t) => Math.abs(t - at) <= span / 40) : null;
+  const onMove = (e) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    setAt(since + Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * span);
+  };
+  const ax = at != null ? x(at) : 0;
+  // The label sits centred on the pointer, but never past either edge of the card (which clips it).
+  useLayoutEffect(() => {
+    const box = boxRef.current;
+    const tip = tipRef.current;
+    if (!box || !tip) return;
+    const w = box.clientWidth;
+    const tw = tip.offsetWidth;
+    tip.style.left = `${Math.max(6, Math.min(w - tw - 6, (ax / 100) * w - tw / 2))}px`;
+  });
+  const cpuText = ci != null ? (cpu.unit === 'pct' ? `${pct(cpu.points[ci])} CPU` : `${cpu.points[ci].toFixed(2)} cores`) : null;
+  const memText = mi != null ? `${pct(mem.points[mi])} mem` : null;
+  return (
+    <div ref={boxRef} className="relative" style={{ height: H }} onMouseMove={onMove} onMouseLeave={() => setAt(null)}>
+      <svg viewBox={`0 0 100 ${H}`} preserveAspectRatio="none" className="absolute inset-0 w-full h-full overflow-visible" aria-hidden="true">
+        {cpuPaths && <path d={cpuPaths.area} fill={color} opacity="0.1" />}
+        {memPaths && <path d={memPaths.line} fill="none" stroke={memColor} strokeWidth="1.25" strokeDasharray="3 2.5" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />}
+        {cpuPaths && <path d={cpuPaths.line} fill="none" stroke={color} strokeWidth="1.25" strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />}
+      </svg>
+      {marks.map((t) => (
+        <span key={t} className="absolute top-0 bottom-0 pointer-events-none" style={{ left: `${x(t)}%` }}>
+          <span className="absolute top-0 bottom-0 w-px -ml-px bg-[color-mix(in_srgb,var(--accent)_55%,transparent)]" />
+          <span className="absolute top-0 w-[5px] h-[5px] -ml-[3px] rotate-45 bg-[var(--accent)]" />
+        </span>
+      ))}
+      {at != null && (cpuText || memText || deploy) && (
+        <>
+          <span className="absolute top-0 bottom-0 w-px bg-[var(--line-strong)] pointer-events-none" style={{ left: `${ax}%` }} />
+          <span
+            ref={tipRef}
+            className="absolute top-0.5 px-1.5 py-px rounded-[6px] bg-[var(--bg-elevated)] shadow-[inset_0_0_0_1px_var(--line-strong)] text-footnote tabular whitespace-nowrap pointer-events-none"
+          >
+            {deploy ? (
+              <span className="text-accent font-medium">Deployed {clockHM(deploy)}</span>
+            ) : (
+              <span className="text-label">{[cpuText, memText].filter(Boolean).join(' · ')}</span>
+            )}
+            <span className="text-label-3"> · {ago(deploy || (ci != null ? cpu.times[ci] : mem.times[mi]))}</span>
+          </span>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** "Memory runs out in ~12 min", at the pace of the last 15 minutes, when that's under half an hour away. */
+function memWarning(eta) {
+  if (eta == null || eta > 30 * 60_000) return null;
+  if (eta < 60_000) return 'Memory is at its limit';
+  return `Memory runs out in ~${Math.round(eta / 60_000)} min`;
+}
+
+/**
+ * A service at a glance: its CPU large, memory beside it, the last hour of both
+ * along the bottom edge, then traffic or what is wrong (or how soon memory runs out). When the card is orange
+ * or red, the figures that made it so (CPU, memory, pods, restarts) take its
+ * colour; the rest stay quiet.
+ */
+function ServiceCard({ s, metricsSource }) {
   const problem = s.health === 'down' || s.health === 'degraded';
+  const u = usageOf(s, metricsSource);
+  const tone = s.health === 'down' ? 'text-red' : 'text-orange';
+  const caused = (k) => problem && s.causes?.includes(k) && tone;
+  const spark = s.cpuSpark;
+  const sparkMax = spark ? (spark.unit === 'pct' ? Math.max(0.1, ...spark.points) * 1.15 : Math.max(...spark.points, 1e-6) * 1.15) : 1;
+  const memSoon = memWarning(s.memEta);
+  const memTone = caused('mem') || (memSoon && (s.memEta < 5 * 60_000 ? 'text-red' : 'text-orange'));
+  const notes = [memSoon, ...(problem ? s.reasons || [] : [])].filter(Boolean);
   return (
     <button
       type="button"
       onClick={() => inspect('service', s.name)}
       className={cx(
-        'card press p-3.5 text-left flex flex-col gap-2.5 min-w-0 transition-shadow',
+        'card press px-3.5 pt-3.5 text-left flex flex-col min-w-0 overflow-hidden transition-shadow',
         s.health === 'down' && 'shadow-[0_0_0_1.5px_var(--red),var(--shadow-card)]',
         s.health === 'degraded' && 'shadow-[0_0_0_1px_color-mix(in_srgb,var(--orange)_60%,transparent),var(--shadow-card)]',
       )}
@@ -64,50 +203,57 @@ function ServiceCard({ s }) {
       <div className="flex items-center gap-2 min-w-0">
         <span className="text-headline font-semibold truncate">{s.short}</span>
         {s.hosts?.length > 0 && <Icon name="globe" size={12} className="text-label-3 shrink-0" />}
-        {/* Healthy is the normal state: a quiet check, so the pills that remain are the ones worth reading. */}
         <span className="ml-auto shrink-0">
-          {s.health === 'healthy' ? (
-            <span title="Healthy" aria-label="Healthy" className="w-5 h-5 grid place-items-center text-green">
-              <Icon name="check" size={13} strokeWidth={2.2} />
-            </span>
+          {memSoon && s.health === 'healthy' ? (
+            <Pill tone={s.memEta < 5 * 60_000 ? 'red' : 'orange'} icon="errors">Memory rising</Pill>
           ) : (
             <HealthPill health={s.health} />
           )}
         </span>
       </div>
-      <div className="flex items-center gap-1 flex-wrap min-h-2">
-        {s.pods.map((p) => (
-          <span key={p.name} title={`${p.name} · ${p.status}`} className={cx('w-2 h-2 rounded-full', { green: 'bg-green', orange: 'bg-orange', red: 'bg-red', accent: 'bg-accent', gray: 'bg-gray' }[STATE_TONE[p.state]])} />
-        ))}
-        <span className="text-subheadline text-label-3 ml-1 tabular">
-          {s.ready}/{s.desired} ready
-          {s.scaling ? ` · ${s.scaling.min}–${s.scaling.max}` : ''}
+      <div className="flex items-end gap-3 mt-2 min-w-0">
+        <span title={u.cpuTitle} className="flex items-baseline gap-1">
+          <span className={cx('text-[20px] leading-6 font-medium tracking-[-0.02em] tabular', u.cpu == null ? 'text-label-3' : caused('cpu') || 'text-label')}>{u.cpu != null ? pct(u.cpu) : '—'}</span>
+          <span className="text-footnote text-label-3">CPU</span>
+        </span>
+        <span title={u.memTitle} className="flex items-baseline gap-1 pb-px">
+          <span className={cx('text-subheadline tabular', u.mem == null ? 'text-label-3' : memTone ? cx(memTone, 'font-medium') : 'text-label-2')}>{u.mem != null ? pct(u.mem) : '—'}</span>
+          <span className="text-footnote text-label-3">mem</span>
+        </span>
+        <span className="ml-auto flex items-center gap-1 pb-1 min-w-0" title={s.pods.map((p) => `${p.name} · ${p.status}`).join('\n')}>
+          {s.pods.slice(0, 6).map((p) => (
+            <span key={p.name} className={cx('w-1.5 h-1.5 rounded-full shrink-0', { green: 'bg-green', orange: 'bg-orange', red: 'bg-red', accent: 'bg-accent', gray: 'bg-gray' }[STATE_TONE[p.state]])} />
+          ))}
+          <span className={cx('text-footnote tabular ml-0.5 whitespace-nowrap', caused('pods') ? cx(caused('pods'), 'font-medium') : 'text-label-3')}>
+            {s.ready}/{s.desired}
+            {s.scaling ? ` · ${s.scaling.min}–${s.scaling.max}` : ''}
+          </span>
         </span>
       </div>
-      {problem && s.reasons?.[0] ? (
-        <div className={cx('text-callout leading-4 line-clamp-2', s.health === 'down' ? 'text-red' : 'text-orange')}>{s.reasons.join(' · ')}</div>
-      ) : (
-        <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-subheadline">
-          <div>
-            <div className="flex justify-between text-label-3 mb-1">
-              <span>CPU</span>
-              <span className="tabular">{s.cpuPct != null ? pct(s.cpuPct) : '—'}</span>
-            </div>
-            <Meter value={s.cpuPct} />
-          </div>
-          <div>
-            <div className="flex justify-between text-label-3 mb-1">
-              <span>Memory</span>
-              <span className="tabular">{s.memPct != null ? pct(s.memPct) : '—'}</span>
-            </div>
-            <Meter value={s.memPct} />
-          </div>
-        </div>
-      )}
-      <div className="flex items-center gap-3 text-subheadline text-label-2 tabular">
-        {s.rpm != null && s.hosts?.length > 0 && <span>{compact(s.rpm)} req/min</span>}
-        <span className={cx(s.errorsPerMin >= 5 && 'text-orange')}>{s.errorsPerMin ? `${s.errorsPerMin < 1 ? s.errorsPerMin.toFixed(1) : Math.round(s.errorsPerMin)} err/min` : 'no errors'}</span>
-        {s.restarts > 0 && <span className={cx(s.recentRestarts > 0 && 'text-orange')}>{s.restarts} restarts</span>}
+      <div className="-mx-3.5 mt-2" title={spark || s.memSpark ? undefined : u.cpuTitle}>
+        {spark || s.memSpark ? (
+          <UsageLine
+            cpu={spark}
+            mem={s.memSpark}
+            deploys={s.deploys}
+            max={sparkMax}
+            color={caused('cpu') ? `var(--${s.health === 'down' ? 'red' : 'orange'})` : 'var(--label-3)'}
+            memColor={memTone ? `var(--${memTone.slice(5)})` : 'color-mix(in srgb, var(--label-3) 70%, transparent)'}
+          />
+        ) : (
+          <div className="h-[34px] shadow-[inset_0_-1px_0_var(--line)]" />
+        )}
+      </div>
+      <div className="flex items-center gap-3 py-2 text-subheadline text-label-2 tabular shadow-[inset_0_1px_0_var(--line)] -mx-3.5 px-3.5 min-w-0">
+        {notes.length ? (
+          <span className={cx('truncate', problem ? tone : memTone)} title={notes.map((n) => (n === memSoon ? `${n}, at the pace its fullest container climbed over the last 15 minutes` : n)).join('\n')}>{notes.join(' · ')}</span>
+        ) : (
+          <>
+            {s.rpm != null && s.hosts?.length > 0 && <span>{compact(s.rpm)} req/min</span>}
+            <span className={cx(s.errorsPerMin >= 5 && 'text-orange')}>{s.errorsPerMin ? `${s.errorsPerMin < 1 ? s.errorsPerMin.toFixed(1) : Math.round(s.errorsPerMin)} err/min` : 'no errors'}</span>
+            {s.restarts > 0 && <span className={cx(s.recentRestarts > 0 && 'text-orange')}>{s.restarts} restarts</span>}
+          </>
+        )}
       </div>
     </button>
   );
@@ -124,6 +270,7 @@ export default function Overview() {
   const errors = useStore((s) => s.sections.errors);
   const sources = useStore((s) => s.sections.sources);
   const session = useStore((s) => s.sections.session);
+  const metricsDown = ['error', 'forbidden', 'degraded', 'unavailable'].includes(sources?.metrics?.status);
   const [filter, setFilter] = useState('all');
   const now = useNow(15_000);
 
@@ -185,6 +332,14 @@ export default function Overview() {
               <>
                 {services.length} workloads in the {session?.namespace || 'flobi'} namespace
                 {rollingOut > 0 && <span className="text-accent font-medium"> · {rollingOut} rolling out</span>}
+                {metricsDown && (
+                  <span className="text-orange">
+                    {' · '}
+                    <button type="button" title={sources.metrics.message || undefined} onClick={() => navigate({ to: 'settings', tab: 'sources' })} className="hover:underline">
+                      live CPU and memory unavailable
+                    </button>
+                  </span>
+                )}
               </>
             }
             right={
@@ -206,7 +361,7 @@ export default function Overview() {
           {!services.length ? (
             <div className="grid grid-cols-[repeat(auto-fill,minmax(250px,1fr))] gap-3">
               {Array.from({ length: 9 }, (_, i) => (
-                <div key={i} className="card p-3.5 h-[132px]">
+                <div key={i} className="card p-3.5 h-[150px]">
                   <div className="skeleton h-4 w-24" />
                   <div className="skeleton h-3 w-32 mt-3" />
                   <div className="skeleton h-2 w-full mt-6" />
@@ -216,7 +371,7 @@ export default function Overview() {
           ) : list.length ? (
             <div className="grid grid-cols-[repeat(auto-fill,minmax(250px,1fr))] gap-3">
               {list.map((s) => (
-                <ServiceCard key={s.name} s={s} />
+                <ServiceCard key={s.name} s={s} metricsSource={sources?.metrics} />
               ))}
             </div>
           ) : (
@@ -232,7 +387,7 @@ export default function Overview() {
             <Card pad={false} className="p-1.5">
               {!activeAlerts.length && <div className="px-3 py-6 text-center text-callout text-label-2">No active alerts</div>}
               {activeAlerts.slice(0, 6).map((a) => (
-                <button key={a.id} type="button" onClick={() => navigate(a.view || 'crashes')} className={cx('w-full text-left flex gap-2.5 p-2 rounded-[12px] hover:bg-fill-4', a.clearing && 'opacity-60')}>
+                <button key={a.id} type="button" onClick={() => navigate(a.view || 'crashes')} className={cx('w-full text-left flex gap-2.5 p-2 rounded-[8px] hover:bg-fill-4', a.clearing && 'opacity-60')}>
                   <StatusDot tone={SEV_TONE[a.severity]} size={8} className="mt-1.5" pulse={a.severity === 'critical' && !a.acked && !a.clearing} />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5 min-w-0">
@@ -272,7 +427,7 @@ export default function Overview() {
             <Card pad={false} className="p-1.5">
               {!crashes.length && <div className="px-3 py-6 text-center text-callout text-label-2">No crashes in the last 7 days</div>}
               {crashes.slice(0, 4).map((c) => (
-                <button key={c.id} type="button" onClick={() => inspect('crash', c.id)} className="w-full text-left flex gap-2.5 p-2 rounded-[12px] hover:bg-fill-4">
+                <button key={c.id} type="button" onClick={() => inspect('crash', c.id)} className="w-full text-left flex gap-2.5 p-2 rounded-[8px] hover:bg-fill-4">
                   <div className={cx('w-6 h-6 rounded-full grid place-items-center shrink-0', c.reason === 'OOMKilled' ? 'bg-red-tint' : 'bg-orange-tint')}>
                     <Icon name={c.reason === 'OOMKilled' ? 'memory' : 'bolt'} size={12} className={c.reason === 'OOMKilled' ? 'text-red' : 'text-orange'} strokeWidth={2} />
                   </div>

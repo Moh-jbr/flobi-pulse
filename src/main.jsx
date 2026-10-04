@@ -1,4 +1,6 @@
 import { createRoot } from 'react-dom/client';
+import '@fontsource-variable/geist';
+import '@fontsource-variable/geist-mono';
 import './styles.css';
 import App from './App.jsx';
 import { connect } from './lib/store.js';

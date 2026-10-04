@@ -112,7 +112,7 @@ export default function DateTimePicker({ value, onChange, max, label }) {
               aria-label={label ? `${label}: choose a date and time` : 'Choose a date and time'}
               tabIndex={-1}
               onKeyDown={onPanelKey}
-              className="absolute rounded-[18px] bg-elevated shadow-[var(--shadow-pop),0_0_0_0.5px_var(--separator)] p-3 animate-sheet outline-none"
+              className="absolute rounded-[12px] bg-elevated shadow-[var(--shadow-pop),0_0_0_0.5px_var(--separator)] p-3 animate-sheet outline-none"
               style={{ left: pos.left, top: pos.top, bottom: pos.bottom, width: pos.width }}
             >
               <div className="flex items-center justify-between mb-2 px-1">
@@ -144,7 +144,7 @@ export default function DateTimePicker({ value, onChange, max, label }) {
                       onClick={() => setDay(d)}
                       className={cx(
                         'h-8 rounded-full text-callout tabular transition-colors disabled:opacity-25',
-                        isSel ? 'bg-accent text-white font-semibold' : same(d, today) ? 'text-accent font-semibold hover:bg-fill-3' : inMonth ? 'text-label hover:bg-fill-3' : 'text-label-3 hover:bg-fill-4',
+                        isSel ? 'bg-accent text-on-accent font-semibold' : same(d, today) ? 'text-accent font-semibold hover:bg-fill-3' : inMonth ? 'text-label hover:bg-fill-3' : 'text-label-3 hover:bg-fill-4',
                       )}
                     >
                       {d.getDate()}
@@ -162,7 +162,7 @@ export default function DateTimePicker({ value, onChange, max, label }) {
                   <button type="button" onClick={() => emit(new Date())} className="h-6 px-2.5 rounded-full bg-fill-3 hover:bg-fill-2 text-callout">
                     Now
                   </button>
-                  <button type="button" onClick={close} className="h-6 px-3 rounded-full bg-accent text-white text-callout font-medium">
+                  <button type="button" onClick={close} className="h-6 px-3 rounded-full bg-accent text-on-accent text-callout font-medium">
                     Done
                   </button>
                 </div>
