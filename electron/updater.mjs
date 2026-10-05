@@ -84,6 +84,22 @@ export class Updater {
     return download(opts);
   }
 
+  /**
+   * Starts `file` through Windows' administrator prompt (a method of its own so tests can stand in
+   * for it). Resolves once the elevated installer is running; rejects when the prompt was declined
+   * or blocked, so the app stays open. Start-Process returns as soon as the process has started.
+   */
+  async elevate(file, args) {
+    try {
+      await execFileP('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', "$ErrorActionPreference = 'Stop'; Start-Process -FilePath $env:PULSE_INSTALLER -ArgumentList ($env:PULSE_ARGS -split ' ') -Verb RunAs"], {
+        env: { ...process.env, PULSE_INSTALLER: file, PULSE_ARGS: args.join(' ') },
+        windowsHide: true,
+      });
+    } catch {
+      throw new Error('Flobi Pulse is installed for all users, so Windows has to allow the update. The permission prompt was declined or blocked, and nothing was changed. Click to try again.');
+    }
+  }
+
   /** The folder the app runs from, which the Windows installer writes to. */
   installDir() {
     return path.dirname(process.execPath);
@@ -142,11 +158,9 @@ export class Updater {
     let handedOff = false;
     try {
       this.set({ status: 'downloading', progress: 0, error: null });
-      // Installed for all users (Program Files): the installer would need an administrator,
-      // and saying no to that prompt would leave the app closed. Say so before downloading.
-      if (process.platform === 'win32' && !(await canWrite(this.installDir()))) {
-        throw new Error(`Flobi Pulse is installed for all users (in ${this.installDir()}), so it can't update itself. Download the new installer from the releases page and run it.`);
-      }
+      // Installed for all users (Program Files): only an administrator can write there, so the
+      // installer is started through Windows' administrator prompt once the download is verified.
+      const allUsers = process.platform === 'win32' && !(await canWrite(this.installDir()));
       dir = await fs.mkdtemp(path.join(os.tmpdir(), UPDATE_DIR_PREFIX));
       const file = path.join(dir, asset.name);
       let shown = 0;
@@ -162,7 +176,7 @@ export class Updater {
       if (!expected) throw new Error('This release has no checksum for the download, so it was not installed.');
       if (expected !== sha256) throw new Error('The download was damaged (checksum mismatch). Try again.');
       this.set({ status: 'installing', progress: 1 });
-      const { keepDir = false } = (await INSTALL[process.platform](file, dir)) || {};
+      const { keepDir = false } = (await INSTALL[process.platform](file, dir, { allUsers, elevate: (f, args) => this.elevate(f, args) })) || {};
       handedOff = true;
       if (!keepDir) await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
       this.quit();
@@ -229,12 +243,14 @@ async function canWrite(dir) {
 
 const INSTALL = {
   // The NSIS installer reinstalls silently (/S) into the folder the user chose the
-  // first time, then starts the app again (--force-run). install() has already
-  // checked that this folder is writable.
-  async win32(file) {
+  // first time, then starts the app again (--force-run). An install for all users
+  // (Program Files) goes through the administrator prompt and stays per-machine (/allusers).
+  async win32(file, dir, { allUsers = false, elevate } = {}) {
+    const args = ['/S', '--updated', '--force-run'];
     // Quit only once Windows has really started the installer: if an antivirus blocked
-    // the (unsigned) file, the app would otherwise close without updating.
-    await started("Windows didn't start the installer (an antivirus may have blocked it). Download it from the releases page instead", () => spawn(file, ['/S', '--updated', '--force-run'], { detached: true, stdio: 'ignore', windowsHide: true }));
+    // the (unsigned) file, or the prompt was declined, the app would otherwise close without updating.
+    if (allUsers) await elevate(file, ['/S', '/allusers', '--updated', '--force-run']);
+    else await started("Windows didn't start the installer (an antivirus may have blocked it). Download it from the releases page instead", () => spawn(file, args, { detached: true, stdio: 'ignore', windowsHide: true }));
     return { keepDir: true }; // it runs from the download folder; cleaned at a later start
   },
 
