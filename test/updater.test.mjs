@@ -150,16 +150,42 @@ test('a program that can’t start gives the same plain error, whether Node thro
   running.emit('error', new Error('exited badly')); // later errors are ignored, not thrown
 });
 
-test('Windows: installed for all users, it says to use the installer, before downloading anything', async () => {
+test('Windows: installed for all users, it downloads, verifies, then runs the installer through the administrator prompt', async () => {
   await asPlatform('win32', async () => {
     const u = updater();
     u.installDir = () => path.join(os.tmpdir(), 'pulse-no-such-folder', 'Flobi Pulse'); // not writable for us
+    const asked = [];
+    u.elevate = async (file, args) => asked.push({ file, args });
+    await u.check();
+    await u.install();
+    assert.equal(u.state.error, null);
+    assert.equal(u.state.status, 'installing');
+    assert.equal(asked.length, 1, 'one administrator prompt');
+    assert.equal(path.basename(asked[0].file), 'Flobi-Pulse-Setup-1.0.1.exe');
+    assert.equal(path.dirname(asked[0].file), u.dirs[0], 'the verified download is what runs');
+    assert.deepEqual(asked[0].args, ['/S', '/allusers', '--updated', '--force-run'], 'silent, stays installed for all users, starts again');
+    assert.equal(u.quits, 1, 'the app quits so the installer can replace it');
+  });
+});
+
+test('Windows: a declined administrator prompt leaves the app running with a plain error, and it can be tried again', async () => {
+  await asPlatform('win32', async () => {
+    const u = updater();
+    u.installDir = () => path.join(os.tmpdir(), 'pulse-no-such-folder', 'Flobi Pulse');
+    let prompts = 0;
+    u.elevate = async () => {
+      prompts++;
+      throw new Error('Flobi Pulse is installed for all users, so Windows has to allow the update. The permission prompt was declined or blocked, and nothing was changed. Click to try again.');
+    };
     await u.check();
     await u.install();
     assert.equal(u.state.status, 'error');
-    assert.match(u.state.error, /installed for all users .*can't update itself\. Download the new installer from the releases page/);
+    assert.match(u.state.error, /permission prompt was declined or blocked, and nothing was changed/);
+    assert.equal(u.quits, 0, 'the app stays open');
+    assert.ok(await gone(u.dirs[0]), 'the download is removed');
+    await u.install();
+    assert.equal(prompts, 2, 'a second click asks again');
     assert.equal(u.quits, 0);
-    assert.equal(u.dirs.length, 0, 'nothing was downloaded');
   });
 });
 
