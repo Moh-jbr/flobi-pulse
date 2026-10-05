@@ -1,7 +1,7 @@
 {
   "name": "flobi-pulse",
   "productName": "Flobi Pulse",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Read-only live health monitor for the Flobi platform (GKE, Cloud SQL, Sentry, Cloudflare).",
   "author": "Flobi",
   "license": "UNLICENSED",
