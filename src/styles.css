@@ -151,20 +151,21 @@
   --code-bg: #fafafa;
 }
 
-/* The dark tokens, once: `@variant dark` puts them under both branches of the variant above. */
+/* The dark tokens, once: `@variant dark` puts them under both branches of the variant above.
+   Charcoal: a near-black grey page, never pure black, with cards a step lighter. */
 :root {
   @variant dark {
     color-scheme: dark;
-    --bg-content: #000000;
-    --bg-elevated: #0a0a0a;
-    --bg-grouped: #050505;
+    --bg-content: #121212;
+    --bg-elevated: #1a1a1a;
+    --bg-grouped: #161616;
     --label: #ededed;
     --label-2: #a1a1a1;
-    --label-3: #6b6b6b;
-    --label-4: #3d3d3d;
-    --separator: #1c1c1c;
-    --line: #1f1f1f;
-    --line-strong: #2e2e2e;
+    --label-3: #7a7a7a;
+    --label-4: #474747;
+    --separator: #262626;
+    --line: #292929;
+    --line-strong: #383838;
     --tooltip-bg: #ededed;
     --tooltip-fg: #0a0a0a;
     --fill-1: rgb(255 255 255 / 0.16);
@@ -187,13 +188,13 @@
     --green-tint: rgb(69 196 107 / 0.13);
     --orange-tint: rgb(245 165 36 / 0.13);
     --red-tint: rgb(242 85 90 / 0.14);
-    --gray-tint: rgb(255 255 255 / 0.07);
-    --thumb: #232323;
+    --gray-tint: rgb(255 255 255 / 0.08);
+    --thumb: #2e2e2e;
 
-    --glass-rgb: 0 0 0;
-    --shadow-pop: 0 24px 64px rgb(0 0 0 / 0.7), 0 0 0 1px #262626;
+    --glass-rgb: 18 18 18;
+    --shadow-pop: 0 24px 64px rgb(0 0 0 / 0.7), 0 0 0 1px #333333;
     --scrim: rgb(0 0 0 / 0.6);
-    --code-bg: #000000;
+    --code-bg: #0d0d0d;
   }
 }
 
