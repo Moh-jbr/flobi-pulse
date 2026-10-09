@@ -18,6 +18,7 @@
     "build": "vite build",
     "start": "vite build && electron .",
     "test": "node --test \"test/**/*.test.mjs\"",
+    "version": "node scripts/changelog-release.mjs && git add CHANGELOG.md",
     "dist:win": "vite build && electron-builder --win --publish never",
     "dist:mac": "vite build && electron-builder --mac --publish never",
     "dist:linux": "vite build && electron-builder --linux --publish never"

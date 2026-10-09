@@ -8,6 +8,7 @@ import { StatusColumns, StatusLegend, LatencyBar } from '../components/charts.js
 import Icon from '../components/icons.jsx';
 import ExportButton from '../components/ExportButton.jsx';
 import { clockMs, compact, pct, ms, bytes, uaShort, short } from '../lib/format.js';
+import { appOf } from '../lib/apps.js';
 
 /** An error from the main process, without Electron's "Error invoking remote method …" prefix. */
 export const cleanError = (e) => String(e?.message || e).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
@@ -16,6 +17,7 @@ export const TRAFFIC_COLUMNS = [
   { label: 'Time', get: (r) => new Date(r.ts) },
   { label: 'Method', get: (r) => r.method },
   { label: 'Status', get: (r) => r.status },
+  { label: 'App', get: (r) => appOf(r) || '' },
   { label: 'Host', get: (r) => r.host },
   { label: 'Path', get: (r) => r.path },
   { label: 'Service', get: (r) => (r.service ? short(r.service) : '') },
@@ -31,8 +33,12 @@ export const TRAFFIC_COLUMNS = [
 ];
 
 // Columns follow the table's own width (container queries): narrow windows keep
-// Time · Status · Path · Service · Latency, wider ones add Method, Host, Size, Client.
-const GRID = 'grid grid-cols-[84px_52px_minmax(0,1fr)_104px_112px] @4xl:grid-cols-[92px_58px_56px_150px_minmax(0,1fr)_120px_130px_70px] @6xl:grid-cols-[92px_58px_56px_150px_minmax(0,1fr)_120px_130px_70px_120px] items-center gap-3 px-4 @4xl:px-6';
+// Time · Status · App · Path · Service · Latency, wider ones add Method and Host, the widest Size and
+// Client. Path is what people read, so every tier leaves it about 200 px.
+const GRID = 'grid grid-cols-[84px_52px_84px_minmax(0,1fr)_104px_112px] @4xl:grid-cols-[92px_58px_56px_84px_112px_minmax(0,1fr)_120px_130px] @6xl:grid-cols-[92px_58px_56px_84px_112px_minmax(0,1fr)_120px_130px_70px_120px] items-center gap-3 px-4 @4xl:px-6';
+
+/** Says which app made a request with no Referer: none of them said so. */
+const NO_APP = 'No app named itself: a server, a script, a link opened directly, or a live connection (those name no page)';
 const WIDE = 'hidden @4xl:block';
 const WIDEST = 'hidden @6xl:block';
 
@@ -333,7 +339,7 @@ export function NewCount({ n }) {
   return n > 0 ? <span className="text-label-2 tabular">· {compact(n)} new</span> : null;
 }
 
-const requestSearchText = makeSearchText((r) => `${r.method} ${r.host}${r.path} ${r.ip} ${r.ua} ${r.service || ''} ${r.status}`);
+const requestSearchText = makeSearchText((r) => `${r.method} ${r.host}${r.path} ${r.ip} ${r.ua} ${r.service || ''} ${r.status} ${appOf(r) || ''}`);
 
 // Renders again only when its own props change, so rows already on screen don't redo their work as requests stream in.
 const RequestRow = memo(function RequestRow({ r, rh, selected }) {
@@ -351,6 +357,15 @@ const RequestRow = memo(function RequestRow({ r, rh, selected }) {
       <span>
         <RequestStatus status={r.status} />
       </span>
+      {appOf(r) ? (
+        <span className="truncate text-label" title={r.referer}>
+          {appOf(r)}
+        </span>
+      ) : (
+        <span className="text-label-4" title={NO_APP}>
+          —
+        </span>
+      )}
       <span className={cx(WIDE, 'truncate text-label-2')}>{r.host}</span>
       <span className="truncate font-mono text-subheadline" title={`${r.method} ${r.host}${r.path}`}>
         <span className="@4xl:hidden font-semibold text-label-2 mr-1.5">{r.method}</span>
@@ -358,7 +373,7 @@ const RequestRow = memo(function RequestRow({ r, rh, selected }) {
       </span>
       <span className="truncate text-label-2">{r.service ? short(r.service) : '—'}</span>
       <LatencyBar ms={r.latencyMs} />
-      <span className={cx(WIDE, 'text-right tabular text-label-2')}>{bytes(r.respSize)}</span>
+      <span className={cx(WIDEST, 'text-right tabular text-label-2')}>{bytes(r.respSize)}</span>
       <span className={cx(WIDEST, 'truncate text-label-3')}>{uaShort(r.ua)}</span>
     </button>
   );
@@ -372,6 +387,7 @@ export default function Traffic() {
   const selected = useStore((s) => (s.inspector?.type === 'request' ? s.inspector.id : null));
   const [status, setStatus] = useState(params?.filter?.status || 'all');
   const [host, setHost] = useState('all');
+  const [app, setApp] = useState('all');
   const [service, setService] = useState(params?.filter?.service || '');
   const [q, setQ] = useState('');
   const [slow, setSlow] = useState(false);
@@ -391,11 +407,17 @@ export default function Traffic() {
     for (const r of ring.slice(-2000)) m.set(r.host, (m.get(r.host) || 0) + 1);
     return [...m.entries()].sort((a, b) => b[1] - a[1]).map(([h]) => h);
   }, [Math.floor(version / 20)]);
+  // The apps seen lately, busiest first ('' = requests no app named itself on).
+  const apps = useMemo(() => {
+    const m = new Map();
+    for (const r of ring.slice(-2000)) m.set(appOf(r) || '', (m.get(appOf(r) || '') || 0) + 1);
+    return [...m.entries()].sort((a, b) => b[1] - a[1]).map(([a]) => a);
+  }, [Math.floor(version / 20)]);
 
   const ql = q.trim().toLowerCase();
-  const filterKey = [status, host, service, slow, ql].join('\u0000');
+  const filterKey = [status, host, app, service, slow, ql].join('\u0000');
   const test = useMemo(
-    () => (r) => (status === 'all' || statusGroup(r.status) === status) && (host === 'all' || r.host === host) && (!service || r.service === service) && (!slow || r.latencyMs >= 1000) && (!ql || requestSearchText(r).includes(ql)),
+    () => (r) => (status === 'all' || statusGroup(r.status) === status) && (host === 'all' || r.host === host) && (app === 'all' || (appOf(r) || '') === app) && (!service || r.service === service) && (!slow || r.latencyMs >= 1000) && (!ql || requestSearchText(r).includes(ql)),
     [filterKey],
   );
   const feed = useLiveFeed({ key: 'traffic', stream: TRAFFIC_STREAM, version, test, filterKey, cap: TRAFFIC_CAP, newestFirst: true });
@@ -435,10 +457,11 @@ export default function Traffic() {
 
   const rh = useStore((s) => s.info?.settings?.appearance?.density) === 'compact' ? 26 : 30;
   const src = paused?.rows || feed.all;
-  const filtering = status !== 'all' || host !== 'all' || !!service || slow || q.trim() !== '';
+  const filtering = status !== 'all' || host !== 'all' || app !== 'all' || !!service || slow || q.trim() !== '';
   const clearFilters = () => {
     setStatus('all');
     setHost('all');
+    setApp('all');
     setService('');
     setSlow(false);
     setQ('');
@@ -446,7 +469,7 @@ export default function Traffic() {
   const failures = Object.entries(stats?.failureDetails || {})
     .map(([k, v]) => `${v}× ${k.replace(/_/g, ' ')}`)
     .join(', ');
-  const what = [status !== 'all' && status, host !== 'all' && host, service && short(service), slow && 'slower than 1 s', q.trim() && `“${q.trim()}”`].filter(Boolean).join(' · ');
+  const what = [status !== 'all' && status, app !== 'all' && (app || 'no app'), host !== 'all' && host, service && short(service), slow && 'slower than 1 s', q.trim() && `“${q.trim()}”`].filter(Boolean).join(' · ');
 
   return (
     <ViewFixed>
@@ -498,6 +521,7 @@ export default function Traffic() {
             { value: '5xx', label: '5xx', dot: 'red' },
           ]}
         />
+        <Select value={app} onChange={setApp} icon="frontends" ariaLabel="App" options={[{ value: 'all', label: 'All apps' }, ...apps.map((a) => ({ value: a, label: a || 'No app' }))]} />
         <Select value={host} onChange={setHost} icon="globe" ariaLabel="Host" options={[{ value: 'all', label: 'All hosts' }, ...hosts.map((h) => ({ value: h, label: h }))]} />
         {service && (
           <button type="button" onClick={() => setService('')} className="h-6 px-2.5 rounded-full bg-accent-tint text-accent text-callout inline-flex items-center gap-1">
@@ -509,7 +533,7 @@ export default function Traffic() {
         </label>
         <div className="ml-auto flex items-center gap-2">
           <span className="text-subheadline text-label-3 tabular">{compact(items.length)} shown</span>
-          <SearchField value={q} onChange={setQ} placeholder="Path, IP, client, status…" width={240} />
+          <SearchField value={q} onChange={setQ} placeholder="Path, app, IP, client, status…" width={240} />
           <Button
             size="sm"
             variant={paused?.by === 'user' ? 'tinted' : 'secondary'}
@@ -538,11 +562,12 @@ export default function Traffic() {
               <span>Time</span>
               <span className={WIDE}>Method</span>
               <span>Status</span>
+              <span>App</span>
               <span className={WIDE}>Host</span>
               <span>Path</span>
               <span>Service</span>
               <span>Latency</span>
-              <span className={cx(WIDE, 'text-right')}>Size</span>
+              <span className={cx(WIDEST, 'text-right')}>Size</span>
               <span className={WIDEST}>Client</span>
             </div>
           }

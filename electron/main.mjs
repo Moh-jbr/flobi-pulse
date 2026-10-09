@@ -18,6 +18,8 @@ import { deniedAttempts, resetGuard, configureGuard } from './core/net/guard.mjs
 import { destroyAgents } from './core/net/http.mjs';
 import { Connectivity } from './core/net/connectivity.mjs';
 import { Updater } from './updater.mjs';
+import { whenText } from './core/update/deadline.mjs';
+import { setOpenAtLogin, syncOpenAtLogin, openedAtLogin } from './core/login-item.mjs';
 import { GitHubClient } from './core/sources/github.mjs';
 import { VersionsWatcher } from './core/engine/versions.mjs';
 import { CostsService } from './core/costs.mjs';
@@ -27,7 +29,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isMac = process.platform === 'darwin';
 const isWin = process.platform === 'win32';
 const DEV_URL = process.env.PULSE_DEV_URL || null;
-const START_IN_DEMO = process.argv.includes('--demo');
+// Demo data is for working on the app (npm run dev / npm run demo), never in an installed copy.
+const DEMO_ALLOWED = !app.isPackaged;
+const START_IN_DEMO = DEMO_ALLOWED && process.argv.includes('--demo');
 const MIN = 60_000;
 // The old known-error map is still read for this long after the first save of the new one.
 const LEGACY_KNOWN_ERRORS_MS = 30 * 24 * 60 * MIN;
@@ -58,6 +62,8 @@ if (!app.requestSingleInstanceLock()) {
 let win = null;
 let tray = null;
 let quitting = false;
+// The computer started the app: it waits in the tray instead of opening its window.
+let startHidden = false;
 let settingsStore;
 let stateStore;
 let secrets;
@@ -258,6 +264,18 @@ function notifyReleases(all) {
   n.show();
 }
 
+/** An update was offered, or installs itself in a few minutes: said even when alerts are muted. */
+function notifyUpdate({ kind, version, at }) {
+  if (!Notification.isSupported()) return;
+  const when = whenText(at);
+  const n =
+    kind === 'soon'
+      ? new Notification({ title: `Flobi Pulse updates itself in ${Math.max(1, Math.round((at - Date.now()) / 60_000))} minutes`, body: `Version ${version} installs and the app restarts. Update now from the toolbar if that suits you better.` })
+      : new Notification({ title: `Flobi Pulse ${version} is ready`, body: `It installs itself the next time the app starts, or ${when} at the latest. Update now from the toolbar.` });
+  n.on('click', () => showWindow());
+  n.show();
+}
+
 // ── Costs page: billing from BigQuery's export, Cloudflare, GitHub, OpenRouter, fal and Settings ──
 /** Hands the session, keys and Settings → Costs to the Costs page; cheap when nothing changed. */
 function syncCosts() {
@@ -276,6 +294,7 @@ function publicInfo() {
     platform: process.platform,
     version: app.getVersion(),
     mode,
+    fromSource: !app.isPackaged, // run from source: demo data and the next version's notes
     identity: auth?.identity || (mode === 'demo' ? { kind: 'demo', email: 'demo@flobi.ai', name: 'Demo mode' } : null),
     team: {
       projectId: c.projectId,
@@ -346,7 +365,11 @@ function createWindow() {
   // Like Discord: look for a new version when the window comes back to the front.
   win.on('focus', () => updater?.checkIfStale());
 
-  win.once('ready-to-show', () => win.show());
+  win.once('ready-to-show', () => {
+    if (startHidden) {
+      if (isMac) app.dock?.hide();
+    } else win.show();
+  });
   win.on('close', (e) => {
     if (!quitting && settingsStore.get().general.keepRunningInTray && mode !== 'signed-out') {
       e.preventDefault();
@@ -374,6 +397,7 @@ function createWindow() {
 }
 
 function showWindow() {
+  startHidden = false;
   if (!win || win.isDestroyed()) createWindow();
   if (win.isMinimized()) win.restore();
   win.show();
@@ -764,6 +788,7 @@ const commands = {
   },
 
   'demo:start': async () => {
+    if (!DEMO_ALLOWED) throw new Error('Demo data is only available when running from source.');
     await startDemo();
     return publicInfo();
   },
@@ -792,11 +817,12 @@ const commands = {
     pick('appearance', { theme: (v) => ['system', 'light', 'dark'].includes(v), glass: (v) => typeof v === 'number' && v >= 0 && v <= 1, density: (v) => ['regular', 'compact'].includes(v) });
     pick('notifications', { critical: bool, warning: bool, info: bool, releases: bool, sound: bool, alarmRepeat: bool, volume: (v) => typeof v === 'number' && v >= 0 && v <= 1 });
     pick('general', { keepRunningInTray: bool, openAtLogin: bool, liveIncludesInfoLogs: bool });
+    pick('views', { services: (v) => ['table', 'cards'].includes(v) });
     patch = clean;
     await settingsStore.update(patch);
     const s = settingsStore.get();
     nativeTheme.themeSource = s.appearance.theme;
-    if (!!before.general.openAtLogin !== !!s.general.openAtLogin) app.setLoginItemSettings({ openAtLogin: !!s.general.openAtLogin });
+    if (!!before.general.openAtLogin !== !!s.general.openAtLogin) await setOpenAtLogin(app, !!s.general.openAtLogin).catch((e) => console.error('[login item]', e));
     const needsRestart = patch.general && 'liveIncludesInfoLogs' in patch.general;
     if (needsRestart) await restartLive();
     return publicInfo();
@@ -1128,6 +1154,25 @@ app.whenReady().then(async () => {
     contents.on('will-attach-webview', (ev) => ev.preventDefault());
   });
 
+  // Starting with the computer is on unless somebody turned it off. Installs from before it was
+  // (when it was off by default) are switched on once; after that the choice in Settings holds.
+  try {
+    if (!stateStore.get().openAtLoginDefaulted) {
+      await settingsStore.update({ general: { openAtLogin: true } });
+      await setOpenAtLogin(app, true);
+      await stateStore.update({ openAtLoginDefaulted: true });
+    } else {
+      // Checked at every start: a moved or updated app is registered again, and one turned off
+      // outside the app stays off (the toggle then says so).
+      const on = await syncOpenAtLogin(app, !!settingsStore.get().general.openAtLogin);
+      if (on !== !!settingsStore.get().general.openAtLogin) await settingsStore.update({ general: { openAtLogin: on } });
+    }
+  } catch (e) {
+    console.error('[login item]', e);
+  }
+  // In the tray only when it keeps running there; otherwise there'd be no way to it.
+  startHidden = openedAtLogin(app) && !!settingsStore.get().general.keepRunningInTray;
+
   buildMenu();
   createWindow();
   createTray();
@@ -1161,7 +1206,14 @@ app.whenReady().then(async () => {
     }
   }, 3000);
 
-  updater = new Updater({ repo: await releaseRepo(), onChange: (update) => send({ t: 'update', update }), quit: () => ((quitting = true), app.quit()) });
+  updater = new Updater({
+    repo: await releaseRepo(),
+    onChange: (update) => send({ t: 'update', update }),
+    quit: () => ((quitting = true), app.quit()),
+    seen: stateStore.get().updateSeen || null,
+    saveSeen: (seen) => stateStore.update({ updateSeen: seen || undefined }),
+    onNotice: notifyUpdate,
+  });
   updater.start();
   startVersions();
   costs = new CostsService({
@@ -1181,6 +1233,8 @@ app.whenReady().then(async () => {
 
   if (START_IN_DEMO) await startDemo();
   else await restoreSession();
+  // Nobody signed in: started with the computer or not, the sign-in has to be seen.
+  if (startHidden && mode === 'signed-out') showWindow();
 
   powerMonitor.on('resume', async () => {
     try {

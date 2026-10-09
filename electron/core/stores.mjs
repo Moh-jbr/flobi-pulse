@@ -74,9 +74,13 @@ export const DEFAULT_SETTINGS = {
     volume: 0.8, // 0–1
     alarmRepeat: true, // critical siren repeats until acknowledged
   },
+  // How each page shows its lists, as last chosen (Overview's Services: cards or table).
+  views: {
+    services: 'table',
+  },
   general: {
     keepRunningInTray: true,
-    openAtLogin: false,
+    openAtLogin: true, // start with the computer (in the tray)
     liveIncludesInfoLogs: true,
   },
   // Per-machine overrides of config/team.config.json (null = use team value)

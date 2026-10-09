@@ -149,10 +149,12 @@ export function InfoTip({ title, body, note, className }) {
   );
 }
 
-export function SectionTitle({ title, subtitle, right, className, icon, info }) {
+// `wrap`: when the controls on the right don't fit beside the title, they go under it (and wrap
+// among themselves) instead of running over whatever stands to the right of the section.
+export function SectionTitle({ title, subtitle, right, className, icon, info, wrap }) {
   return (
-    <div className={cx('flex items-end justify-between gap-4 mb-2.5 px-1', className)}>
-      <div className="min-w-0 flex-1">
+    <div className={cx('flex items-end justify-between gap-4 mb-2.5 px-1', wrap && 'flex-wrap gap-y-2', className)}>
+      <div className={cx('min-w-0 flex-1', wrap && 'basis-52')}>
         <h2 className="text-title3 font-semibold flex items-center gap-1.5">
           {icon && <Icon name={icon} size={15} className="text-label-2" />}
           {title}
@@ -160,7 +162,7 @@ export function SectionTitle({ title, subtitle, right, className, icon, info }) 
         </h2>
         {subtitle && <p className="text-callout text-label-2 mt-0.5 truncate">{subtitle}</p>}
       </div>
-      {right && <div className="flex items-center gap-2 shrink-0">{right}</div>}
+      {right && <div className={cx('flex items-center gap-2', wrap ? 'flex-wrap justify-end min-w-0 ml-auto' : 'shrink-0')}>{right}</div>}
     </div>
   );
 }

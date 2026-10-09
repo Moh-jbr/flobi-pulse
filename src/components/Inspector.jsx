@@ -9,6 +9,8 @@ import { RequestStatus, NO_RESPONSE, cleanError } from '../views/Traffic.jsx';
 import { ago, clock, clockHMS, clockMs, dayTime, duration, bytes, cores, pct, ms, short, uaShort, compact, coverage } from '../lib/format.js';
 import { crashReason } from '../views/Crashes.jsx';
 import { isWindows } from '../lib/platform.js';
+import { appOf } from '../lib/apps.js';
+import { errorsOfService } from '../lib/services-table.js';
 import ErrorBoundary from './ErrorBoundary.jsx';
 
 const DETAILS = {
@@ -98,8 +100,10 @@ function ServiceInspector({ id }) {
   const pods = useStore((st) => st.sections.pods) || [];
   const events = useStore((st) => st.sections.events) || [];
   const crashes = useStore((st) => st.sections.crashes) || [];
+  const errorGroups = useStore((st) => st.sections.errors?.backend);
   const now = useNow(10_000);
   if (!s) return <Gone what="service" section="services" />;
+  const myErrors = errorsOfService(errorGroups, s.name);
   const myPods = pods.filter((p) => p.service === s.name);
   const myEvents = events.filter((e) => e.service === s.name).slice(0, 8);
   const myCrashes = crashes.filter((c) => c.service === s.name).slice(0, 5);
@@ -126,6 +130,27 @@ function ServiceInspector({ id }) {
             <div key={i}>• {r}</div>
           ))}
         </div>
+      )}
+      {myErrors.length > 0 && (
+        <Section
+          title="Its errors · last hour"
+          right={
+            <Button size="sm" variant="plain" onClick={() => navigate({ to: 'errors', filter: { service: s.name } })}>
+              See all
+            </Button>
+          }
+        >
+          <div className="text-subheadline text-label-2 mb-2">Lines {s.short} logged as errors while it kept running, so they aren't crashes. The ones firing now come first.</div>
+          {myErrors.map((g) => (
+            <button key={g.id} type="button" onClick={() => inspect('error', g.id)} className="w-full text-left flex items-start gap-3 py-1.5 -mx-2.5 px-2.5 rounded-[8px] hover:bg-fill-4">
+              <span className="flex-1 min-w-0 font-mono text-subheadline line-clamp-2 break-words">{g.title}</span>
+              <span className="shrink-0 text-right tabular text-subheadline">
+                <span className={g.count5m ? 'text-orange font-medium' : 'text-label-2'}>{compact(g.count5m)} in 5 min</span>
+                <span className="block text-label-3">{compact(g.count1h)} in the hour</span>
+              </span>
+            </button>
+          ))}
+        </Section>
       )}
       <Section title="At a glance">
         <KeyValue
@@ -410,6 +435,7 @@ function RequestInspector({ data: r }) {
     `${r.method} ${url} → ${statusLine}`,
     `When: ${dayTime(r.ts)} ${clockMs(r.ts)} · took ${ms(r.latencyMs)}`,
     `Served by: ${svc || 'unknown'}${r.statusDetails ? ` · load balancer: ${r.statusDetails}` : ''}`,
+    appOf(r) && `App: ${appOf(r)}`,
     `Client: ${uaShort(r.ua)} · ${r.ip}${cloudflare ? ' (via Cloudflare)' : ''}`,
     r.trace && `Trace: ${r.trace.split('/').pop()}`,
     logs.lines.length ? `\nServer logs:\n${logs.lines.map((l) => `${clockMs(l.ts)} ${l.level} ${l.text}`).join('\n')}` : null,
@@ -497,6 +523,7 @@ function RequestInspector({ data: r }) {
             ['Time', `${dayTime(r.ts)} · ${clockMs(r.ts)}`],
             ['Took', ms(r.latencyMs)],
             ['Served by', svc || 'unknown'],
+            ['App', appOf(r) || 'None named (no Referrer: a server, a script, a phone app or a link opened directly)'],
             ['Client', uaShort(r.ua)],
             ['Remote address', `${r.ip}${cloudflare ? ' (Cloudflare edge; the user is behind it)' : ''}`],
             r.referer && ['Referrer', r.referer],

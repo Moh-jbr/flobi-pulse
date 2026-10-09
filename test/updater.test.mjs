@@ -119,10 +119,15 @@ test('Windows: an installer that can’t start (antivirus) leaves the app runnin
     assert.equal(u.state.status, 'error');
     assert.match(u.state.error, /^Windows didn't start the installer \(an antivirus may have blocked it\)\. Download it from the releases page instead \([A-Z]+\)\.$/);
     assert.equal(u.quits, 0, 'the app stays open');
-    assert.ok(await gone(u.dirs[0]), 'the failed download is removed');
-    await u.install(); // and it can be tried again
-    assert.equal(u.dirs.length, 2);
+    assert.equal(await gone(u.dirs[0]), false, 'the verified download is kept for the next try');
+    await u.install(); // and it can be tried again, with the same file
+    assert.equal(u.dirs.length, 1, 'not downloaded again');
+    assert.equal(u.state.status, 'error');
     assert.equal(u.quits, 0);
+    await fs.writeFile(path.join(u.dirs[0], u.asset.name), 'damaged'); // the kept file changed on disk
+    await u.install();
+    assert.equal(u.dirs.length, 2, 'a kept file that no longer matches is downloaded again');
+    assert.ok(await gone(u.dirs[0]), 'and the old folder is removed');
   });
   await fs.rm(dir, { recursive: true, force: true });
 });
@@ -182,9 +187,10 @@ test('Windows: a declined administrator prompt leaves the app running with a pla
     assert.equal(u.state.status, 'error');
     assert.match(u.state.error, /permission prompt was declined or blocked, and nothing was changed/);
     assert.equal(u.quits, 0, 'the app stays open');
-    assert.ok(await gone(u.dirs[0]), 'the download is removed');
+    assert.equal(await gone(u.dirs[0]), false, 'the verified download is kept');
     await u.install();
     assert.equal(prompts, 2, 'a second click asks again');
+    assert.equal(u.dirs.length, 1, 'without downloading it again');
     assert.equal(u.quits, 0);
   });
 });

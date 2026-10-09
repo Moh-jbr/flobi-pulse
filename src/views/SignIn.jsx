@@ -88,9 +88,12 @@ export default function SignIn({ info }) {
             </div>
           )}
 
-          <button type="button" disabled={!!busy} onClick={() => run('demo', () => invoke('demo:start'))} className="mt-5 text-callout text-accent hover:underline disabled:opacity-40">
-            Explore with demo data
-          </button>
+          {/* Demo data is for working on the app: an installed copy never offers it. */}
+          {info.fromSource && (
+            <button type="button" disabled={!!busy} onClick={() => run('demo', () => invoke('demo:start'))} className="mt-5 text-callout text-accent hover:underline disabled:opacity-40">
+              Explore with demo data
+            </button>
+          )}
 
           <div className="w-full mt-6 pt-4 hairline-t flex items-center gap-2 text-subheadline text-label-2 text-left">
             <Icon name="shield" size={16} className="text-green shrink-0" />

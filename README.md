@@ -228,10 +228,10 @@ them right away after a restart.
 
 | Command | What it does |
 | --- | --- |
-| `npm run demo` | Run with simulated data (no credentials needed) |
+| `npm run demo` | Run with simulated data (no credentials needed). Only from source: the installed app never offers demo data |
 | `npm run dev` | Run against the real platform (sign in on first launch) |
 | `npm test` | Unit tests: read-only guard, gRPC/protobuf, auth, Kubernetes watch, health model, error grouping, alerts, alert sounds, recap, the past-week load, updates, saved state, costs (billing readers, totals) |
-| `npm version patch && git push --follow-tags` | **Release a new version**: GitHub Actions builds Windows, macOS and Linux for free and publishes them; installed apps offer the update |
+| `npm version patch && git push --follow-tags` | **Release a new version** (CHANGELOG.md's "Unreleased" becomes the new version and today's date in the same commit, and Settings → What's new shows it; write what changed under "Unreleased" as you go): GitHub Actions builds Windows, macOS and Linux for free and publishes them; installed apps offer the update |
 | `npm run dist:win` | Build the Windows installer locally → `release/` |
 | `npm run dist:mac` | Build the macOS `.dmg` locally (on a Mac) → `release/` |
 | `npm run dist:linux` | Build the Linux AppImage locally (on Linux) → `release/` |

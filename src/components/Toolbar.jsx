@@ -1,9 +1,10 @@
 import { useRef, useState } from 'react';
 import { useStore, setState, navigate, invoke } from '../lib/store.js';
 import Icon from './icons.jsx';
-import { cx, IconButton, Popover, StatusDot, Segmented, Empty, useWindowWidth, AlertText, Spinner } from './ui.jsx';
+import { cx, IconButton, Popover, StatusDot, Segmented, Empty, useWindowWidth, AlertText, Spinner, useNow } from './ui.jsx';
 import { compact, ago, short, duration } from '../lib/format.js';
 import { shortcut } from '../lib/platform.js';
+import { countdown, deadlineSentence, retrySentence } from '../lib/update-deadline.js';
 
 const TITLES = {
   overview: ['Overview', 'Every service, pod and endpoint at a glance'],
@@ -37,17 +38,28 @@ function LivePill() {
   );
 }
 
+/** The last minutes before an update installs itself, ticking. */
+function Countdown({ at }) {
+  const now = useNow(1000);
+  return `Updating in ${countdown(at, now)}`;
+}
+
 // Like Discord: when a new release is out, a button appears; one click downloads
-// it, installs it and restarts the app.
+// it, installs it and restarts the app. Not clicked, it installs itself at the next
+// start or after a day, and counts down its last ten minutes here.
 function UpdateButton() {
   const u = useStore((s) => s.update);
   if (!u || !['available', 'downloading', 'installing', 'error'].includes(u.status)) return null;
   const pct = Math.round((u.progress || 0) * 100);
   const failed = u.status === 'error';
   const busy = u.status === 'downloading' || u.status === 'installing';
-  const label = { available: 'Update available', downloading: `Downloading ${pct}%`, installing: 'Restarting…', error: 'Update failed · retry' }[u.status];
+  const label = { available: u.forcingAt ? <Countdown at={u.forcingAt} /> : 'Update available', downloading: `Downloading ${pct}%`, installing: 'Restarting…', error: 'Update failed · retry' }[u.status];
   const size = u.size ? ` (${(u.size / 1048576).toFixed(0)} MB)` : '';
-  const tip = failed ? `${u.error}\nClick to try again.` : u.status === 'available' ? `Flobi Pulse ${u.version} is out. Click to download it${size} and restart.` : `Updating to ${u.version}…`;
+  const tip = failed
+    ? `${u.error}${/try again\.$/.test(u.error || '') ? '' : '\nClick to try again.'}${u.auto && u.nextTry ? `\n${retrySentence(u.nextTry)}` : ''}`
+    : u.status === 'available'
+      ? `Flobi Pulse ${u.version} is out. Click to download it${size} and restart.${u.deadline ? `\n${deadlineSentence(u.deadline)}` : ''}`
+      : `Updating to ${u.version}…`;
   return (
     <button
       type="button"

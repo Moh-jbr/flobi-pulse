@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useStore, invoke, setState as setStore } from '../lib/store.js';
+import { useStore, invoke, navigate, setState as setStore } from '../lib/store.js';
 import { ViewScroll } from '../components/Toolbar.jsx';
 import { Card, Button, Toggle, Segmented, Slider, TextField, StatusDot, cx, Pill, Kbd } from '../components/ui.jsx';
 import Icon from '../components/icons.jsx';
@@ -9,6 +9,9 @@ import CostsSettings from '../components/CostsSettings.jsx';
 import { ago, clockHM } from '../lib/format.js';
 import { isMac, shortcut } from '../lib/platform.js';
 import { cleanError as clean } from './Traffic.jsx';
+import { parseChangelog, changelogFor } from '../lib/changelog.js';
+import { deadlineSentence, retrySentence } from '../lib/update-deadline.js';
+import CHANGELOG from '../../CHANGELOG.md?raw';
 
 function Group({ title, footer, children }) {
   return (
@@ -275,14 +278,17 @@ function UpdatesRow({ version }) {
   const detail = {
     idle: u?.error || (u?.lastError ? `Last check failed: ${u.lastError}. ${u.retryAt > Date.now() ? `Trying again at ${clockHM(u.retryAt)}.` : 'Trying again soon.'}` : u?.checkedAt ? `Up to date · checked ${ago(u.checkedAt)}` : 'Up to date'),
     checking: 'Checking for a new version…',
-    available: `Version ${u?.version} is ready to install`,
+    available: `Version ${u?.version} is ready to install. ${deadlineSentence(u?.deadline)}`.trim(),
     downloading: `Downloading version ${u?.version} · ${pct}%`,
     installing: 'Installing and restarting…',
-    error: u?.error,
+    error: u?.auto && u.nextTry ? `${u.error} ${retrySentence(u.nextTry)}` : u?.error,
     unsupported: u?.error || 'Updates only run in the installed app.',
   }[status];
   return (
     <Row label={`Flobi Pulse ${version}`} detail={detail} icon="download">
+      <Button variant="plain" onClick={() => navigate({ to: 'settings', tab: 'changelog' })}>
+        What's new
+      </Button>
       {u?.releasesUrl && (
         <Button variant="plain" onClick={() => invoke('open:external', { url: u.releasesUrl })}>
           Release notes
@@ -301,6 +307,29 @@ function UpdatesRow({ version }) {
   );
 }
 
+/** Settings → What's new: CHANGELOG.md, newest first, with the version this copy is marked. */
+function WhatsNew({ version, fromSource }) {
+  const entries = changelogFor(parseChangelog(CHANGELOG), { showUnreleased: fromSource });
+  return entries.map((e) => (
+    <section key={e.version} className="mb-7 animate-rise">
+      <h2 className="flex items-center gap-2 px-1 mb-2">
+        <span className="text-headline font-semibold">{e.unreleased ? 'Not released yet' : `Version ${e.version}`}</span>
+        {e.date && <span className="text-subheadline text-label-3">{e.date}</span>}
+        {e.version === version && <Pill tone="accent">This version</Pill>}
+      </h2>
+      <Card>
+        <ul className="flex flex-col gap-2 text-body list-disc pl-5 marker:text-label-3">
+          {e.items.map((item, i) => (
+            <li key={i} className="selectable">
+              {item}
+            </li>
+          ))}
+        </ul>
+      </Card>
+    </section>
+  ));
+}
+
 const TABS = [
   { id: 'general', label: 'General' },
   { id: 'integrations', label: 'Integrations' },
@@ -310,6 +339,7 @@ const TABS = [
   { id: 'notifications', label: 'Notifications' },
   { id: 'appearance', label: 'Appearance' },
   { id: 'sources', label: 'Data sources' },
+  { id: 'changelog', label: "What's new" },
 ];
 const TAB_IDS = new Set(TABS.map((t) => t.id));
 // The tab Settings was left on, for the next time it opens (this window, until a restart).
@@ -327,6 +357,10 @@ function Tabs({ value, onChange, problems }) {
     onChange(TABS[next].id);
     ref.current?.querySelector(`[data-tab="${TABS[next].id}"]`)?.focus();
   };
+  // A narrow window scrolls the tabs: the chosen one is always brought into view.
+  useEffect(() => {
+    ref.current?.querySelector(`[data-tab="${value}"]`)?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+  }, [value]);
   return (
     <div ref={ref} role="tablist" aria-label="Settings" onKeyDown={onKeyDown} className="no-drag flex gap-1 overflow-x-auto mb-6 shadow-[inset_0_-1px_0_var(--line)]">
       {TABS.map((t) => {
@@ -425,14 +459,14 @@ export default function Settings() {
               <Row label="Keep running when the window is closed" detail={`Stays in the ${mac ? 'menu bar' : 'system tray'} so alerts keep coming`}>
                 <Toggle checked={s.general.keepRunningInTray} onChange={(v) => set({ general: { keepRunningInTray: v } })} label="Keep running in tray" />
               </Row>
-              <Row label="Open at login">
-                <Toggle checked={s.general.openAtLogin} onChange={(v) => set({ general: { openAtLogin: v } })} label="Open at login" />
+              <Row label="Start with the computer" detail={s.general.keepRunningInTray && !mac ? 'Opens in the system tray when you sign in to the computer, so alerts come from the start' : 'Opens when you sign in to the computer, so alerts come from the start'}>
+                <Toggle checked={s.general.openAtLogin} onChange={(v) => set({ general: { openAtLogin: v } })} label="Start with the computer" />
               </Row>
               <Row label="Include info logs in the live stream" detail="Turn off to stream only warnings and errors (lighter on busy days)">
                 <Toggle checked={s.general.liveIncludesInfoLogs} onChange={(v) => set({ general: { liveIncludesInfoLogs: v } })} label="Include info logs" />
               </Row>
             </Group>
-            <Group title="Updates" footer="Flobi Pulse looks for a new version when it starts, every hour, when the window comes back to the front and after the computer wakes up. An update installs where you put the app and keeps your settings and keys.">
+            <Group title="Updates" footer="Flobi Pulse looks for a new version when it starts, every hour, when the window comes back to the front and after the computer wakes up. An update installs where you put the app and keeps your settings and keys. One you don't install yourself installs itself the next time the app starts, or a day after it was offered.">
               <UpdatesRow version={info.version} />
             </Group>
             <Group title="Keyboard shortcuts">
@@ -553,6 +587,7 @@ export default function Settings() {
             </Row>
           </Group>
         )}
+        {tab === 'changelog' && <WhatsNew version={info.version} fromSource={info.fromSource} />}
         {tab === 'sources' && (
           <Group footer={denied.length ? null : 'The read-only guard has not blocked anything this session.'}>
             {[

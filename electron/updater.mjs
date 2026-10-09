@@ -5,32 +5,52 @@
 // No update library: the two or three requests go through the read-only guard
 // like every other request, and the shipped app keeps zero runtime dependencies.
 // It also works without paid code signing (which the usual macOS updater needs).
+//
+// Nobody stays on an old version (core/update/deadline.mjs): an update that was offered and not
+// installed installs itself the next time the app starts, or a day after it was first offered while
+// the app runs, with a notification ten minutes before.
 import { app } from 'electron';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
-import { constants as FS } from 'node:fs';
+import { constants as FS, createReadStream } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { json, download } from './core/net/http.mjs';
 import { configureGuard } from './core/net/guard.mjs';
 import { isNewer, pickAsset, parseSums, assetDigest, UPDATE_ASSET, UPDATE_DIR_PREFIX, checkRetryDelay, isRateLimited } from './core/update/release.mjs';
 import { cleanStaleUpdates } from './core/update/cleanup.mjs';
+import { noteSeen, isPending, deadlineOf, unfinishedHandOff, WARN_MS } from './core/update/deadline.mjs';
 
 const execFileP = promisify(execFile);
 const HOUR = 60 * 60_000;
+/** How often an install that failed by itself is tried again; after a hand-off that didn't finish, less often (each try closes the app). */
+const RETRY_EVERY = HOUR;
+const RETRY_AFTER_HANDOFF = 6 * HOUR;
 /** While an update downloads or installs, a check must leave the status alone. */
 const BUSY = ['downloading', 'installing'];
 
 export class Updater {
   /**
-   * @param {{repo: string, onChange: (state: object) => void, quit: () => void}} o
-   * `quit` must really quit (not hide to the tray), so the installer can take over.
+   * @param {{repo: string, onChange: (state: object) => void, quit: () => void, seen?: {version: string, at: number} | null, saveSeen?: (seen: object | null) => void, onNotice?: (n: {kind: 'available' | 'soon', version: string, at: number}) => void}} o
+   * `quit` must really quit (not hide to the tray), so the installer can take over. `seen` is when
+   * an update was first offered (kept by main across restarts, given back through `saveSeen`);
+   * `onNotice` tells the person about one: offered ('available'), installing itself soon ('soon').
    */
-  constructor({ repo, onChange, quit }) {
+  constructor({ repo, onChange, quit, seen = null, saveSeen = () => {}, onNotice = () => {} }) {
     this.repo = repo;
     this.onChange = onChange;
     this.quit = quit;
+    this.saveSeen = saveSeen;
+    this.onNotice = onNotice;
+    this.seen = seen;
+    // Offered before and still not installed: it installs as this start's first check finds it,
+    // unless the last start already handed it to the installer and it didn't take.
+    this.unfinished = unfinishedHandOff(seen, app.getVersion()) ? seen.handedOff.version : null;
+    this.dueOnStart = !this.unfinished && isPending(seen, app.getVersion());
+    this.autoTriedAt = this.unfinished ? Date.now() : 0; // the last time it tried to install by itself
+    this.retryEvery = this.unfinished ? RETRY_AFTER_HANDOFF : RETRY_EVERY;
     this.failures = 0; // failed checks in a row
     this.retryAt = 0; // after a failed check: when the retry runs (background checks wait for it)
     this.state = { status: 'idle', current: app.getVersion(), releasesUrl: repo ? `https://github.com/${repo}/releases/latest` : null };
@@ -57,7 +77,7 @@ export class Updater {
     this.retryAt = 0; // stop() cancelled any pending retry
     configureGuard({ updateRepo: this.repo });
     cleanStaleUpdates().catch(() => {}); // leftovers of earlier updates
-    this.first = setTimeout(() => this.check(), 5_000);
+    this.first = setTimeout(() => this.check(), this.dueOnStart ? 0 : 5_000);
     this.timer = setInterval(() => this.check(), HOUR);
   }
 
@@ -67,6 +87,8 @@ export class Updater {
     clearTimeout(this.first);
     clearInterval(this.timer);
     clearTimeout(this.retry);
+    clearTimeout(this.warnTimer);
+    clearTimeout(this.forceTimer);
   }
 
   /** Checks again if the last check is older than `maxAgeMs` (window focused, computer woke up). */
@@ -123,11 +145,34 @@ export class Updater {
       const version = String(rel?.tag_name || '').replace(/^v/, '');
       const asset = pickAsset(rel, process.platform);
       if (!asset || !isNewer(version, this.state.current)) {
-        this.set({ status: 'idle', checkedAt: Date.now(), error: null, lastError: null, retryAt: null });
+        this.dueOnStart = false;
+        this.clearDeadline();
+        if (this.seen) this.saveSeen((this.seen = null));
+        this.set({ status: 'idle', checkedAt: Date.now(), error: null, lastError: null, retryAt: null, deadline: null, forcingAt: null });
       } else {
         this.release = rel;
         this.asset = asset;
-        this.set({ status: 'available', version, notes: String(rel.body || '').slice(0, 1200), size: asset.size || 0, checkedAt: Date.now(), error: null, lastError: null, retryAt: null });
+        const offered = this.seen?.version !== version; // a version this computer hasn't been told about
+        const seen = noteSeen(this.seen, version, this.state.current, Date.now());
+        if (seen.version !== this.seen?.version || seen.at !== this.seen?.at) this.saveSeen((this.seen = seen));
+        // A failed try at installing by itself keeps saying why until the next try.
+        const unfinished = this.unfinished === version && this.state.status !== 'error';
+        if (this.unfinished !== version) this.unfinished = null;
+        const failed = unfinished || (this.state.status === 'error' && this.state.auto);
+        this.set({
+          status: failed ? 'error' : 'available',
+          version,
+          notes: String(rel.body || '').slice(0, 1200),
+          size: asset.size || 0,
+          checkedAt: Date.now(),
+          ...(!failed && { error: null }),
+          ...(unfinished && { auto: true, nextTry: this.autoTriedAt + this.retryEvery, error: `The update to ${version} didn't finish installing. Download it from the releases page, or click to try again.` }),
+          lastError: null,
+          retryAt: null,
+          deadline: deadlineOf(seen),
+        });
+        if (offered && !this.dueOnStart && Date.now() < deadlineOf(seen) - WARN_MS) this.onNotice({ kind: 'available', version, at: deadlineOf(seen) });
+        this.enforce();
       }
     } catch (e) {
       if (this.stopped) return this.state;
@@ -147,47 +192,117 @@ export class Updater {
     return this.state;
   }
 
-  /** Download → verify → install → restart. Called when the user clicks the button. */
-  async install() {
+  /**
+   * Installs an offered update by itself when it is due: at the first check after the app starts,
+   * or at its deadline. Before the deadline it sets a timer for the warning and one for the install.
+   * A try that failed (the administrator prompt declined, offline) is tried again at the next
+   * start, and hourly while the app runs, deadline or not: the hourly check calls this again.
+   */
+  enforce() {
+    this.clearDeadline();
+    if (!this.seen || !isPending(this.seen, this.state.current)) return;
+    const deadline = deadlineOf(this.seen);
+    const now = Date.now();
+    const retrying = this.state.status === 'error' && this.state.auto;
+    if (this.dueOnStart || now >= deadline || retrying) {
+      const onStart = this.dueOnStart;
+      this.dueOnStart = false;
+      // Checks also run when the window is focused: one try an hour is enough.
+      if (!onStart && now - this.autoTriedAt < this.retryEvery) {
+        // The next try: when the wait is over, or at the deadline if that comes first.
+        const next = this.autoTriedAt + this.retryEvery;
+        this.forceTimer = setTimeout(() => this.enforce(), (now < deadline ? Math.min(deadline, next) : next) - now);
+        this.forceTimer.unref?.();
+        return;
+      }
+      if (!this.canInstall()) return; // already installing, or a check is under way (it calls this again)
+      this.autoTriedAt = now;
+      this.autoInstall = this.install({ auto: true }); // kept so tests can wait for it
+      return;
+    }
+    if (now >= deadline - WARN_MS) this.warn(deadline);
+    else this.warnTimer = setTimeout(() => this.warn(deadline), deadline - WARN_MS - now);
+    this.forceTimer = setTimeout(() => this.enforce(), deadline - now);
+    this.warnTimer?.unref?.();
+    this.forceTimer.unref?.();
+  }
+
+  /** Ten minutes before it installs by itself: a countdown in the toolbar and a notification. */
+  warn(deadline) {
+    if (this.state.forcingAt === deadline) return;
+    this.set({ forcingAt: deadline });
+    this.onNotice({ kind: 'soon', version: this.state.version, at: deadline });
+  }
+
+  clearDeadline() {
+    clearTimeout(this.warnTimer);
+    clearTimeout(this.forceTimer);
+    this.warnTimer = this.forceTimer = null;
+  }
+
+  canInstall() {
+    return !this.installing && ['available', 'error'].includes(this.state.status) && !!this.asset;
+  }
+
+  /** Download → verify → install → restart. Called when the user clicks the button, or by `enforce` (`auto`). */
+  async install({ auto = false } = {}) {
     // Claimed before the first await, so a second click can't start a second download
     // and installer (on macOS, two swap scripts racing).
-    if (this.installing || !['available', 'error'].includes(this.state.status) || !this.asset) return this.state;
+    if (!this.canInstall()) return this.state;
     this.installing = true;
     const asset = this.asset;
+    const version = this.state.version;
     let dir = null;
+    let file = null;
+    let verified = null; // the checksum, once the file on disk is known good
     let handedOff = false;
     try {
-      this.set({ status: 'downloading', progress: 0, error: null });
+      this.set({ status: 'downloading', progress: 0, error: null, auto });
       // Installed for all users (Program Files): only an administrator can write there, so the
       // installer is started through Windows' administrator prompt once the download is verified.
       const allUsers = process.platform === 'win32' && !(await canWrite(this.installDir()));
-      dir = await fs.mkdtemp(path.join(os.tmpdir(), UPDATE_DIR_PREFIX));
-      const file = path.join(dir, asset.name);
-      let shown = 0;
-      const { sha256 } = await this.download({
-        url: asset.browser_download_url,
-        file,
-        onProgress: (bytes, total) => {
-          const p = total ? bytes / total : 0;
-          if (p - shown >= 0.01) this.set({ progress: (shown = p) });
-        },
-      });
-      const expected = assetDigest(asset) || (await this.checksumFromList(asset.name, dir));
-      if (!expected) throw new Error('This release has no checksum for the download, so it was not installed.');
-      if (expected !== sha256) throw new Error('The download was damaged (checksum mismatch). Try again.');
+      // A try that failed after the download (a declined prompt) left it on disk: the next try
+      // uses it again if it is still whole, rather than downloading the same 100 MB every hour.
+      const kept = this.kept;
+      this.kept = null;
+      if (kept && kept.name === asset.name && (await sha256Of(kept.file).catch(() => null)) === kept.sha) ({ dir, file, sha: verified } = kept);
+      else {
+        if (kept) await fs.rm(kept.dir, { recursive: true, force: true }).catch(() => {});
+        dir = await fs.mkdtemp(path.join(os.tmpdir(), UPDATE_DIR_PREFIX));
+        file = path.join(dir, asset.name);
+        let shown = 0;
+        const { sha256 } = await this.download({
+          url: asset.browser_download_url,
+          file,
+          onProgress: (bytes, total) => {
+            const p = total ? bytes / total : 0;
+            if (p - shown >= 0.01) this.set({ progress: (shown = p) });
+          },
+        });
+        const expected = assetDigest(asset) || (await this.checksumFromList(asset.name, dir));
+        if (!expected) throw new Error('This release has no checksum for the download, so it was not installed.');
+        if (expected !== sha256) throw new Error('The download was damaged (checksum mismatch). Try again.');
+        verified = sha256;
+      }
       this.set({ status: 'installing', progress: 1 });
       const { keepDir = false } = (await INSTALL[process.platform](file, dir, { allUsers, elevate: (f, args) => this.elevate(f, args) })) || {};
       handedOff = true;
       if (!keepDir) await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+      // Remembered, so a start that still runs the old version knows this install didn't take.
+      // Written before quitting: the app may exit without waiting for a save still on its way.
+      this.seen = { ...(this.seen || { version, at: Date.now() }), handedOff: { version, at: Date.now() } };
+      await Promise.resolve(this.saveSeen(this.seen)).catch(() => {});
       this.quit();
     } catch (e) {
-      this.set({ status: 'error', error: e.message });
+      this.set({ status: 'error', error: e.message, nextTry: auto ? this.autoTriedAt + this.retryEvery : null });
     } finally {
       if (!handedOff) {
-        if (dir) await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+        if (verified) this.kept = { dir, file, sha: verified, name: asset.name };
+        else if (dir) await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
         this.installing = false;
       }
     }
+    if (auto && !handedOff && !this.stopped) this.enforce(); // sets the timer for the next try
     return this.state;
   }
 
@@ -226,6 +341,17 @@ export function started(why, start) {
       child.unref();
       resolve();
     });
+  });
+}
+
+/** The sha256 of a file on disk, in hex. */
+function sha256Of(file) {
+  return new Promise((resolve, reject) => {
+    const h = createHash('sha256');
+    createReadStream(file)
+      .on('error', reject)
+      .on('data', (c) => h.update(c))
+      .on('end', () => resolve(h.digest('hex')));
   });
 }
 

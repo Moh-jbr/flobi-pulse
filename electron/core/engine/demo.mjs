@@ -153,6 +153,28 @@ const OTHER_HOSTS = [
   ['handoff.zip', 'POST', '/api/transfers', 'flobi-handoff', 350, 3],
   ['yjs.flobi.ai', 'GET', '/health', 'flobi-gateway-yjs', 8, 3],
 ];
+// The app a browser request came from (its Referer), by what it asks for; null: no app says.
+const APP_BY_PATH = [
+  ['/drive', 'drive.flobi.ai'],
+  ['/projects', 'projects.flobi.ai'],
+  ['/notes', 'docs.flobi.ai'],
+  ['/brand', 'brands.flobi.ai'],
+  ['/moodboard', 'mood.flobi.ai'],
+  ['/billing', 'app.flobi.ai'],
+  ['/market', 'market.flobi.ai'],
+  ['/v/', 'upscale.flobi.ai'],
+  ['/z/', 'handoff.flobi.ai'],
+  ['/api/transfers', 'handoff.zip'],
+  ['/api/v1/runs', 'flow.flobi.ai'],
+  ['/socket.io', 'app.flobi.ai'],
+];
+const ANY_APP = ['app.flobi.ai', 'docs.flobi.ai', 'drive.flobi.ai', 'flow.flobi.ai', 'brands.flobi.ai', 'artwork.flobi.ai', 'lumens.flobi.ai'];
+function demoReferer(path, ua) {
+  if (!ua.startsWith('Mozilla') || rand() < 0.06) return undefined;
+  if (path === '/users/me') return `https://${pick(ANY_APP)}/`;
+  const hit = APP_BY_PATH.find(([p]) => path.startsWith(p));
+  return hit ? `https://${hit[1]}/` : undefined;
+}
 const UAS = ['Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/139.0', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/139.0 Edg/139.0', 'Mozilla/5.0 (iPhone; CPU iPhone OS 19_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148', 'node-fetch/1.0 (flobi-sites)'];
 
 const fill = (s) =>
@@ -551,12 +573,13 @@ export class DemoConnector {
         details = 'client_disconnected_before_any_response';
       }
       const latency = Math.max(2, base * Math.exp(between(-0.6, 0.9)) * (status >= 500 ? 0.4 : 1));
+      const ua = pick(UAS);
       raw.push({
         insertId: alnum(12),
         timestampMs: now - Math.floor(rand() * 200),
         logName: 'projects/flobi-prod-2026/logs/requests',
         resource: { type: 'http_load_balancer', labels: { backend_service_name: `k8s1-8f2c1a9b-flobi-${svc}-80-${alnum(8)}`, project_id: 'flobi-prod-2026', zone: 'global' } },
-        httpRequest: { requestMethod: method, requestUrl: `https://${host}${path}`, status, latencySeconds: latency / 1000, requestSize: Math.round(between(200, method === 'POST' ? 90_000 : 900)), responseSize: Math.round(between(300, 60_000)), userAgent: pick(UAS), remoteIp: `172.70.${Math.floor(between(1, 250))}.${Math.floor(between(1, 250))}`, protocol: 'HTTP/1.1' },
+        httpRequest: { requestMethod: method, requestUrl: `https://${host}${path}`, status, latencySeconds: latency / 1000, requestSize: Math.round(between(200, method === 'POST' ? 90_000 : 900)), responseSize: Math.round(between(300, 60_000)), userAgent: ua, referer: demoReferer(path, ua), remoteIp: `172.70.${Math.floor(between(1, 250))}.${Math.floor(between(1, 250))}`, protocol: 'HTTP/1.1' },
         jsonPayload: { statusDetails: details },
         severity: status >= 500 ? 'ERROR' : status >= 400 ? 'WARNING' : 'INFO',
       });

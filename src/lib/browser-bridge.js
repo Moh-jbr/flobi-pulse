@@ -136,7 +136,8 @@ export function createBrowserBridge() {
   let settings = {
     appearance: { theme: 'system', glass: 0.5, density: 'regular' },
     notifications: { critical: true, warning: true, info: false, sound: true, volume: 0.8, alarmRepeat: true },
-    general: { keepRunningInTray: true, openAtLogin: false, liveIncludesInfoLogs: true },
+    general: { keepRunningInTray: true, openAtLogin: true, liveIncludesInfoLogs: true },
+    views: { services: 'table' },
     overrides: {},
   };
   const params = new URLSearchParams(location.search);
@@ -163,9 +164,11 @@ export function createBrowserBridge() {
     const setup = { ...d.setup, openrouter: { hasKey: costsKeys.openrouter }, fal: { hasKey: costsKeys.fal } };
     return buildCosts(d.data, costsSettings, { now, setup, mode: 'demo', running: costsRun.refreshing, cooldownUntil: costsRun.cooldownUntil });
   };
-  // ?update=1 previews the "Update available" button with a simulated download.
+  // ?update=1 previews the "Update available" button with a simulated download; ?update=soon its
+  // last ten minutes before it installs itself.
+  const due = Date.now() + (params.get('update') === 'soon' ? 10 * 60_000 : 24 * 3_600_000);
   let update = params.get('update')
-    ? { status: 'available', current: '1.0.0', version: '1.0.1', size: 98_300_000, releasesUrl: 'https://github.com/Moh-jbr/flobi-pulse/releases/latest' }
+    ? { status: 'available', current: '1.0.0', version: '1.0.1', size: 98_300_000, releasesUrl: 'https://github.com/Moh-jbr/flobi-pulse/releases/latest', deadline: due, forcingAt: params.get('update') === 'soon' ? due : null }
     : { status: 'unsupported', current: '1.0.0', error: 'Updates only run in the installed app.' };
   const setUpdate = (patch) => send({ t: 'update', update: (update = { ...update, ...patch }) });
 
@@ -228,6 +231,7 @@ export function createBrowserBridge() {
     platform,
     version: '1.0.0',
     mode,
+    fromSource: true,
     identity: mode === 'demo' ? { kind: 'demo', email: 'demo@flobi.ai', name: 'Demo mode' } : null,
     team: { projectId: 'flobi-prod-2026', namespace: 'flobi', clusterName: 'flobi-cluster', clusterLocation: 'europe-west1', clusterEndpointInConfig: false },
     integrations: { sentry: { host: 'sentry.io', org: 'flobi', hasToken: true }, cloudflare: { accountId: '', zones: ['flobi.ai'], hasToken: true }, cloudsql: { instances: cloudsqlInstances, fromTeam: [] }, databaseKey, github: { hasToken: true, owner: '4ow4-Developers' }, openrouter: { hasKey: costsKeys.openrouter }, fal: { hasKey: costsKeys.fal } },
