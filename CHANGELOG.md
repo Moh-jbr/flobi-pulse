@@ -3,7 +3,7 @@
 Newest first. Settings → What's new shows this file. Write what a person notices, in plain words,
 under "Unreleased" as you go: `npm version` turns it into the new version and today's date.
 
-## Unreleased
+## 1.3.0 · 2026-10-09
 
 - Services can be shown as a table: one row per service, the same figures and colours as the cards. A down service's row is red, a degraded or warning one orange, and they always stay at the top.
 - The table is the default. Pick Cards or Table and the choice is kept after the app closes.
